@@ -18,6 +18,9 @@ void SetupSound(void)
 	int i;
 
 	if (driver_count == 0) {
+#ifdef HAVE_AICA
+		REGISTER_DRIVER(aica);
+#endif
 #ifdef HAVE_OSS
 		REGISTER_DRIVER(oss);
 #endif

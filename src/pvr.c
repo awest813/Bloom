@@ -273,6 +273,7 @@ struct pvr_renderer {
 };
 
 static void process_poly(struct poly *poly, bool scissor);
+static void process_poly_inner(struct poly *poly, bool scissor, int texwin_budget);
 static void poly_enqueue(pvr_list_t list, const struct poly *poly);
 static void sw_sync_ecmds(const uint32_t *ecmds);
 static void texwin_set(uint32_t cmd);
@@ -2044,7 +2045,12 @@ static void poly_enqueue(pvr_list_t list, const struct poly *poly)
 
 		poly_draw_now(poly);
 	} else if (unlikely(pvr.polybuf_cnt_start == __array_size(polybuf))) {
-		printf("Poly buffer overflow\n");
+		/* The TR list cannot open until PT is closed, so overflow
+		 * cannot flush the buffer. Emit into the current list rather
+		 * than dropping the primitive (MGS-style missing polys). */
+		if (unlikely(pvr.new_frame))
+			pvr_start_scene(list);
+		poly_draw_now(poly);
 	} else {
 		poly_copy(&polybuf[pvr.polybuf_cnt_start++], poly);
 	}
@@ -2255,8 +2261,193 @@ static bool poly_should_clip(const struct poly *poly)
 	return false;
 }
 
+#define TEXWIN_SPLIT_MAX 64
+
+static int vertex_axis(const struct vertex_coords *c, bool cut_v)
+{
+	return cut_v ? c->v : c->u;
+}
+
+static struct vertex_coords
+vertex_cut_axis(struct vertex_coords a, struct vertex_coords b, int cut, bool cut_v)
+{
+	int aa = vertex_axis(&a, cut_v);
+	int ba = vertex_axis(&b, cut_v);
+	int d = ba - aa;
+	int factor;
+
+	if (d == 0)
+		return a;
+
+	factor = ((cut - aa) << 16) / d;
+
+	return (struct vertex_coords){
+		.x = a.x + ((int)(b.x - a.x) * factor >> 16),
+		.y = a.y + ((int)(b.y - a.y) * factor >> 16),
+		.u = cut_v ? a.u + (((int)b.u - (int)a.u) * factor >> 16) : (uint16_t)cut,
+		.v = cut_v ? (uint16_t)cut : a.v + (((int)b.v - (int)a.v) * factor >> 16),
+	};
+}
+
+static uint32_t color_cut_axis(struct vertex_coords a, struct vertex_coords b,
+			       int cut, bool cut_v, uint32_t c1, uint32_t c2)
+{
+	int aa = vertex_axis(&a, cut_v);
+	int ba = vertex_axis(&b, cut_v);
+	int d = ba - aa;
+	int factor, r, g, bc;
+
+	if (c1 == c2 || d == 0)
+		return c1;
+
+	factor = ((cut - aa) << 16) / d;
+	r = (int)(c1 & 0xff) + ((((int)(c2 & 0xff) - (int)(c1 & 0xff)) * factor) >> 16);
+	g = (int)((c1 >> 8) & 0xff)
+		+ ((((int)((c2 >> 8) & 0xff) - (int)((c1 >> 8) & 0xff)) * factor) >> 16);
+	bc = (int)((c1 >> 16) & 0xff)
+		+ ((((int)((c2 >> 16) & 0xff) - (int)((c1 >> 16) & 0xff)) * factor) >> 16);
+
+	return (r & 0xff) | ((g & 0xff) << 8) | ((bc & 0xff) << 16);
+}
+
+/* Mutate poly into the < cut piece; fill *other with the >= cut piece. */
+static bool poly_split_triangle_axis(struct poly *poly, struct poly *other,
+				     int cut, bool cut_v)
+{
+	bool left[3], single_left;
+	unsigned int i, j, idx, nb;
+
+	poly_copy(other, poly);
+
+	for (i = 0, nb = 0; i < 3; i++) {
+		left[i] = vertex_axis(&poly->coords[i], cut_v) < cut;
+		nb += left[i];
+	}
+
+	if (nb == 0 || nb == 3)
+		return false;
+
+	single_left = nb == 1;
+	for (idx = 0; idx < 3 && (left[idx] ^ single_left); idx++)
+		;
+
+	if (nb == 2) {
+		for (i = 0, j = 0; i < 3; i++) {
+			if (i == idx)
+				continue;
+
+			poly->colors[j] = other->colors[i];
+			poly->coords[j++] = other->coords[i];
+
+			other->colors[i] = color_cut_axis(other->coords[i],
+							  other->coords[idx], cut, cut_v,
+							  other->colors[i], other->colors[idx]);
+			other->coords[i] = vertex_cut_axis(other->coords[i],
+							   other->coords[idx], cut, cut_v);
+
+			poly->colors[j] = other->colors[i];
+			poly->coords[j++] = other->coords[i];
+		}
+
+		poly->flags |= POLY_4VERTEX;
+	} else {
+		for (i = 0, j = 0; i < 3; i++) {
+			if (i == idx)
+				continue;
+
+			other->colors[j] = color_cut_axis(poly->coords[idx],
+							  poly->coords[i], cut, cut_v,
+							  poly->colors[idx], poly->colors[i]);
+			other->coords[j++] = vertex_cut_axis(poly->coords[idx],
+							     poly->coords[i], cut, cut_v);
+			other->colors[j] = poly->colors[i];
+			other->coords[j++] = poly->coords[i];
+
+			poly->colors[i] = other->colors[j - 2];
+			poly->coords[i] = other->coords[j - 2];
+		}
+
+		other->flags |= POLY_4VERTEX;
+	}
+
+	return true;
+}
+
+static bool texwin_range_fits(unsigned int umin, unsigned int umax,
+			      unsigned int vmin, unsigned int vmax)
+{
+	return (umin & pvr.win_mask_x) + (umax - umin) <= pvr.win_mask_x + 1
+		&& (vmin & pvr.win_mask_y) + (vmax - vmin) <= pvr.win_mask_y + 1;
+}
+
+/* Split a wrapping textured poly on GP0(E2) tile boundaries. Returns true
+ * if poly was fully consumed (pieces submitted via process_poly_inner). */
+static bool process_poly_texwin_wrap(struct poly *poly, bool scissor, int budget)
+{
+	unsigned int i, nb, umin, umax, vmin, vmax, tw, th, cut;
+	struct poly other;
+
+	if (budget <= 0)
+		return false;
+
+	if (poly->flags & POLY_4VERTEX) {
+		poly->flags &= ~POLY_4VERTEX;
+		poly_copy(&other, poly);
+		for (i = 1; i < 4; i++) {
+			other.colors[i - 1] = other.colors[i];
+			other.coords[i - 1] = other.coords[i];
+		}
+		process_poly_inner(&other, scissor, budget - 1);
+	}
+
+	nb = poly_get_vertex_count(poly);
+	umin = umax = poly->coords[0].u;
+	vmin = vmax = poly->coords[0].v;
+	for (i = 1; i < nb; i++) {
+		if (poly->coords[i].u < umin)
+			umin = poly->coords[i].u;
+		if (poly->coords[i].u > umax)
+			umax = poly->coords[i].u;
+		if (poly->coords[i].v < vmin)
+			vmin = poly->coords[i].v;
+		if (poly->coords[i].v > vmax)
+			vmax = poly->coords[i].v;
+	}
+
+	if (texwin_range_fits(umin, umax, vmin, vmax))
+		return false;
+
+	if (nb != 3)
+		return false;
+
+	tw = pvr.win_mask_x + 1;
+	th = pvr.win_mask_y + 1;
+
+	if ((umin & pvr.win_mask_x) + (umax - umin) > tw) {
+		cut = (umin & ~(tw - 1)) + tw;
+		if (cut > umin && cut < umax
+		    && poly_split_triangle_axis(poly, &other, (int)cut, false)) {
+			process_poly_inner(poly, scissor, budget - 1);
+			process_poly_inner(&other, scissor, budget - 1);
+			return true;
+		}
+	}
+
+	if ((vmin & pvr.win_mask_y) + (vmax - vmin) > th) {
+		cut = (vmin & ~(th - 1)) + th;
+		if (cut > vmin && cut < vmax
+		    && poly_split_triangle_axis(poly, &other, (int)cut, true)) {
+			process_poly_inner(poly, scissor, budget - 1);
+			process_poly_inner(&other, scissor, budget - 1);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 __pvr __attribute__((optimize(2)))
-static void process_poly(struct poly *poly, bool scissor)
+static void process_poly_inner(struct poly *poly, bool scissor, int texwin_budget)
 {
 	struct texture_page *page;
 	unsigned int i, offt;
@@ -2286,16 +2477,37 @@ static void process_poly(struct poly *poly, bool scissor)
 				vmax = poly->coords[i].v;
 		}
 
-		/* Apply GP0(E2) at vertices when the primitive does not wrap
-		 * the window. Wrapping needs per-pixel masks (off-screen SW
-		 * path); remapping endpoints would collapse the UVs. */
-		if ((umax - umin) <= pvr.win_mask_x
-		    && (vmax - vmin) <= pvr.win_mask_y) {
+		/* Split wrapping 3D polys on window-tile boundaries. Sprites
+		 * are tiled earlier; this covers textured triangles/quads. */
+		if (unlikely(!texwin_range_fits(umin, umax, vmin, vmax))) {
+			if (process_poly_texwin_wrap(poly, scissor, texwin_budget))
+				return;
+
+			nb = poly_get_vertex_count(poly);
+			umin = umax = poly->coords[0].u;
+			vmin = vmax = poly->coords[0].v;
+			for (i = 1; i < nb; i++) {
+				if (poly->coords[i].u < umin)
+					umin = poly->coords[i].u;
+				if (poly->coords[i].u > umax)
+					umax = poly->coords[i].u;
+				if (poly->coords[i].v < vmin)
+					vmin = poly->coords[i].v;
+				if (poly->coords[i].v > vmax)
+					vmax = poly->coords[i].v;
+			}
+		}
+
+		/* Apply GP0(E2) by sliding the UV origin when the half-open
+		 * range sits in one window tile. Per-vertex AND collapses
+		 * exclusive sprite edges (u1 == mask+1). */
+		if (texwin_range_fits(umin, umax, vmin, vmax)) {
+			unsigned int u0 = (umin & pvr.win_mask_x) | pvr.win_off_x;
+			unsigned int v0 = (vmin & pvr.win_mask_y) | pvr.win_off_y;
+
 			for (i = 0; i < nb; i++) {
-				poly->coords[i].u = (poly->coords[i].u & pvr.win_mask_x)
-					| pvr.win_off_x;
-				poly->coords[i].v = (poly->coords[i].v & pvr.win_mask_y)
-					| pvr.win_off_y;
+				poly->coords[i].u = u0 + (poly->coords[i].u - umin);
+				poly->coords[i].v = v0 + (poly->coords[i].v - vmin);
 			}
 		}
 
@@ -2414,6 +2626,11 @@ static void process_poly(struct poly *poly, bool scissor)
 	}
 
 	poly_discard(poly);
+}
+
+static void process_poly(struct poly *poly, bool scissor)
+{
+	process_poly_inner(poly, scissor, TEXWIN_SPLIT_MAX);
 }
 
 static void draw_line(int16_t x0, int16_t y0, uint32_t color0,
@@ -2918,6 +3135,161 @@ static bool sw_draw(const union PacketBuffer *pbuffer, uint32_t cmd)
 	return true;
 }
 
+static void sw_line(int x0, int y0, int r0, int g0, int b0,
+		    int x1, int y1, int r1, int g1, int b1, bool semi)
+{
+	int dx = x1 - x0, dy = y1 - y0;
+	int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+	int steps = adx > ady ? adx : ady;
+	int i, x, y;
+
+	if (adx >= 1024 || ady >= 512)
+		return;
+
+	if (steps == 0) {
+		if (x0 >= sw.x1 && x0 < sw.x2 && y0 >= sw.y1 && y0 < sw.y2)
+			sw_shade(x0, y0, 0, 0, r0, g0, b0, false, semi, false, 0, 0);
+		return;
+	}
+
+	for (i = 0; i <= steps; i++) {
+		x = x0 + dx * i / steps;
+		y = y0 + dy * i / steps;
+		if (x >= sw.x1 && x < sw.x2 && y >= sw.y1 && y < sw.y2)
+			sw_shade(x, y, 0, 0,
+				 r0 + (r1 - r0) * i / steps,
+				 g0 + (g1 - g0) * i / steps,
+				 b0 + (b1 - b0) * i / steps,
+				 false, semi, false, 0, 0);
+	}
+}
+
+/* Returns true if every segment was off-screen and rasterized into VRAM. */
+__noinline
+static bool sw_draw_lines(const union PacketBuffer *pbuffer, uint32_t cmd,
+			  unsigned int len_polyline)
+{
+	bool multicolor = cmd & 0x10, semi = cmd & 0x02;
+	const uint32_t *buf = pbuffer->U4;
+	int x0, y0, x1, y1, r0, g0, b0, r1, g1, b1;
+	int bx0, by0, bx1, by1, all_off = 1;
+	uint32_t c;
+	unsigned int i;
+
+	c = *buf++;
+	r0 = c & 0xff;
+	g0 = (c >> 8) & 0xff;
+	b0 = (c >> 16) & 0xff;
+	x0 = (((int32_t)*buf << 21) >> 21) + sw.dx;
+	y0 = (((int32_t)*buf << 5) >> 21) + sw.dy;
+	buf++;
+
+	if (len_polyline < 2)
+		return false;
+
+	for (i = 0; i < len_polyline - 1; i++) {
+		if (multicolor) {
+			c = *buf++;
+			r1 = c & 0xff;
+			g1 = (c >> 8) & 0xff;
+			b1 = (c >> 16) & 0xff;
+		} else {
+			r1 = r0;
+			g1 = g0;
+			b1 = b0;
+		}
+
+		x1 = (((int32_t)*buf << 21) >> 21) + sw.dx;
+		y1 = (((int32_t)*buf << 5) >> 21) + sw.dy;
+		buf++;
+
+		bx0 = x0 < x1 ? x0 : x1;
+		bx1 = x0 > x1 ? x0 : x1;
+		by0 = y0 < y1 ? y0 : y1;
+		by1 = y0 > y1 ? y0 : y1;
+		if (likely(!sw_bbox_offscreen(&bx0, &by0, &bx1, &by1))) {
+			all_off = 0;
+		} else {
+			sw_line(x0, y0, r0, g0, b0, x1, y1, r1, g1, b1, semi);
+			pvr_update_caches(bx0, by0, bx1 - bx0, by1 - by0, true);
+		}
+
+		x0 = x1;
+		y0 = y1;
+		r0 = r1;
+		g0 = g1;
+		b0 = b1;
+	}
+
+	return all_off;
+}
+
+static void draw_sprite_quad(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+			     uint16_t u0, uint16_t v0, uint16_t u1, uint16_t v1,
+			     uint32_t color, uint16_t flags,
+			     enum blending_mode blending_mode, uint16_t clut)
+{
+	struct poly poly;
+
+	poly_alloc_cache(&poly);
+
+	poly = (struct poly){
+		.blending_mode = blending_mode,
+		.colors = { color, color, color, color },
+		.coords = {
+			[0] = { .x = x1, .y = y0, .u = u1, .v = v0 },
+			[1] = { .x = x0, .y = y0, .u = u0, .v = v0 },
+			[2] = { .x = x1, .y = y1, .u = u1, .v = v1 },
+			[3] = { .x = x0, .y = y1, .u = u0, .v = v1 },
+		},
+		.flags = flags,
+		.bpp = pvr.settings.bpp,
+		.texpage_id = pvr.page_y * 16 + pvr.page_x,
+		.clut = clut,
+	};
+
+	process_poly(&poly, true);
+}
+
+/* Split a textured rectangle on GP0(E2) window boundaries so each PVR
+ * quad's UVs stay inside one tile (repeating 8x8 windows and similar). */
+static void draw_textured_sprite(int16_t x, int16_t y, int w, int h,
+				 int u0, int v0, uint32_t color, uint16_t flags,
+				 enum blending_mode blending_mode, uint16_t clut)
+{
+	int sx, sy, uw, vh, u, v;
+	int tw = pvr.win_mask_x + 1, th = pvr.win_mask_y + 1;
+
+	if (w <= 0 || h <= 0)
+		return;
+
+	for (sy = 0; sy < h; sy += vh) {
+		v = v0 + sy;
+		vh = th - (v & pvr.win_mask_y);
+		if (vh > h - sy)
+			vh = h - sy;
+
+		for (sx = 0; sx < w; sx += uw) {
+			unsigned int ul, vl;
+
+			u = u0 + sx;
+			uw = tw - (u & pvr.win_mask_x);
+			if (uw > w - sx)
+				uw = w - sx;
+
+			ul = (u & pvr.win_mask_x) | pvr.win_off_x;
+			vl = (v & pvr.win_mask_y) | pvr.win_off_y;
+
+			draw_sprite_quad(x_to_xoffset(x + sx),
+					 y_to_yoffset(y + sy),
+					 x_to_xoffset(x + sx + uw),
+					 y_to_yoffset(y + sy + vh),
+					 ul, vl, ul + uw, vl + vh,
+					 color, flags, blending_mode, clut);
+		}
+	}
+}
+
 __pvr
 static void process_gpu_commands(void)
 {
@@ -2959,6 +3331,9 @@ static void process_gpu_commands(void)
 
 		if (((cmd >> 5) == 0x1 || (cmd >> 5) == 0x3)
 		    && unlikely(sw_draw(pbuffer, cmd)))
+			continue;
+		if ((cmd >> 5) == 0x2
+		    && unlikely(sw_draw_lines(pbuffer, cmd, len_polyline)))
 			continue;
 
 		switch (cmd >> 5) {
@@ -3195,7 +3570,8 @@ static void process_gpu_commands(void)
 
 		case 0x3: {
 			/* Monochrome rectangle */
-			uint16_t w, h, x0, y0, x1, y1;
+			uint16_t w, h;
+			int16_t x0, y0;
 			bool bright = false;
 			uint32_t color;
 			uint16_t flags = POLY_4VERTEX;
@@ -3233,43 +3609,39 @@ static void process_gpu_commands(void)
 				h = pbuffer->U2[5 + 2 * !!textured];
 			}
 
-			x1 = x_to_xoffset(x0 + w);
-			x0 = x_to_xoffset(x0);
-			y1 = y_to_yoffset(y0 + h);
-			y0 = y_to_yoffset(y0);
-
-			poly_alloc_cache(&poly);
-
 			if (bright)
 				flags |= POLY_BRIGHT;
 			if (textured)
 				flags |= POLY_TEXTURED;
 
-			poly = (struct poly){
-				.blending_mode = blending_mode,
-				.colors = { color, color, color, color },
-				.coords = {
-					[0] = { .x = x1, .y = y0 },
-					[1] = { .x = x0, .y = y0 },
-					[2] = { .x = x1, .y = y1 },
-					[3] = { .x = x0, .y = y1 },
-				},
-				.flags = flags,
-			};
-
 			if (textured) {
-				poly.bpp = pvr.settings.bpp;
-				poly.texpage_id = pvr.page_y * 16 + pvr.page_x;
-				poly.clut = pbuffer->U2[5] & 0x7fff;
+				draw_textured_sprite(x0, y0, w, h,
+						     pbuffer->U1[8], pbuffer->U1[9],
+						     color, flags, blending_mode,
+						     pbuffer->U2[5] & 0x7fff);
+			} else {
+				int16_t x1 = x_to_xoffset(x0 + w);
+				int16_t y1 = y_to_yoffset(y0 + h);
 
-				poly.coords[1].u = poly.coords[3].u = pbuffer->U1[8];
-				poly.coords[0].u = poly.coords[2].u = pbuffer->U1[8] + w;
+				x0 = x_to_xoffset(x0);
+				y0 = y_to_yoffset(y0);
 
-				poly.coords[0].v = poly.coords[1].v = pbuffer->U1[9];
-				poly.coords[2].v = poly.coords[3].v = pbuffer->U1[9] + h;
+				poly_alloc_cache(&poly);
+
+				poly = (struct poly){
+					.blending_mode = blending_mode,
+					.colors = { color, color, color, color },
+					.coords = {
+						[0] = { .x = x1, .y = y0 },
+						[1] = { .x = x0, .y = y0 },
+						[2] = { .x = x1, .y = y1 },
+						[3] = { .x = x0, .y = y1 },
+					},
+					.flags = flags,
+				};
+
+				process_poly(&poly, textured);
 			}
-
-			process_poly(&poly, textured);
 			break;
 		}
 
