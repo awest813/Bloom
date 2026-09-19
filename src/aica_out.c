@@ -43,10 +43,40 @@ static int ring_space(void)
 	return RING_SAMPLES - 1 - ring_count();
 }
 
+static void ring_write(const int16_t *src, int n)
+{
+	int first;
+
+	while (n > 0) {
+		first = RING_SAMPLES - ring_w;
+		if (first > n)
+			first = n;
+		memcpy(ring + ring_w, src, first * sizeof(*ring));
+		ring_w = (ring_w + first) & (RING_SAMPLES - 1);
+		src += first;
+		n -= first;
+	}
+}
+
+static void ring_read(int16_t *dst, int n)
+{
+	int first;
+
+	while (n > 0) {
+		first = RING_SAMPLES - ring_r;
+		if (first > n)
+			first = n;
+		memcpy(dst, ring + ring_r, first * sizeof(*ring));
+		ring_r = (ring_r + first) & (RING_SAMPLES - 1);
+		dst += first;
+		n -= first;
+	}
+}
+
 /* KOS documents smp_req as "samples" but snd_stream_fill passes bytes. */
 static void *aica_callback(snd_stream_hnd_t hnd, int needed_bytes, int *got_bytes)
 {
-	int want, have, i;
+	int want, have;
 
 	(void)hnd;
 
@@ -65,10 +95,7 @@ static void *aica_callback(snd_stream_hnd_t hnd, int needed_bytes, int *got_byte
 	if (want > have)
 		want = have;
 
-	for (i = 0; i < want; i++) {
-		bounce[i] = ring[ring_r];
-		ring_r = (ring_r + 1) & (RING_SAMPLES - 1);
-	}
+	ring_read(bounce, want);
 
 	*got_bytes = want * 2;
 	return bounce;
@@ -123,7 +150,7 @@ static int aica_busy(void)
 static void aica_feed(void *data, int bytes)
 {
 	const int16_t *src = data;
-	int samples, space, i;
+	int samples, space;
 
 	if (bytes < 2 || data == NULL)
 		goto poll;
@@ -133,10 +160,7 @@ static void aica_feed(void *data, int bytes)
 	if (samples > space)
 		samples = space;
 
-	for (i = 0; i < samples; i++) {
-		ring[ring_w] = src[i];
-		ring_w = (ring_w + 1) & (RING_SAMPLES - 1);
-	}
+	ring_write(src, samples);
 
 poll:
 	if (stream_hnd != SND_STREAM_INVALID)

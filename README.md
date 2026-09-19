@@ -61,11 +61,11 @@ Known limitations
   `SPU_PLUGIN=Null` keeps the same mixer with a silent backend (useful
   if a title still misbehaves with output enabled).
 
-- The PVR renderer still has holes (wrapping texture windows on 3D
-  triangles, hybrid-render glitches). Off-screen triangles, sprites, and
-  **lines** now rasterize into VRAM. On-screen **sprites** that wrap a
-  texture window are split into window-sized tiles. Use Unai when a
-  title still needs accurate drawing.
+- The PVR renderer still has holes (hybrid-render glitches). Off-screen
+  triangles, sprites, and **lines** now rasterize into VRAM. On-screen
+  sprites that wrap a texture window are split into window-sized tiles;
+  wrapping textured triangles and quads are clipped on those same
+  boundaries. Use Unai when a title still needs accurate drawing.
 
 - The in-menu **Options** screen is currently read-only. Renderer, resolution,
   and similar flags are compile-time CMake options.

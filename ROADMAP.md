@@ -51,15 +51,18 @@ attacked:
    **Done in this branch:** mask/offset decoded like Unai; applied per-pixel
    in the off-screen software path; PVR vertices use origin-relative remap
    when the half-open UV range sits in one tile; **on-screen sprites that wrap
-   are split into window-sized quads**. Remaining: wrapping on 3D triangles
-   (repeating 8×8 tiles on large polys).
+   are split into window-sized quads**; **wrapping textured triangles/quads
+   are clipped on window-tile boundaries** (capped at 64 splits).
 3. **Horizontally flipped sprites** (upstream issue
    [#9](https://github.com/pcercuei/bloom/issues/9)).
    **Done in this branch:** 1:1 mirrored sprites get a sub-texel UV inset so
    the PVR does not sample the neighbouring column/row.
 4. **Hybrid rendering.** Required for some effects, currently a source of
-   glitches (MGS was reported to need it off). Audit the poly buffer flush
-   vs. software fallback.
+   glitches (MGS was reported to need it off).
+   **Done in this branch:** a full TR poly buffer no longer drops primitives;
+   overflow emits into the current list instead. Remaining: audit PT vs TR
+   ordering when overflow happens mid-frame, and the poly buffer flush vs.
+   software fallback.
 5. **Savestate draw-area restore** for E3–E5.
    **Done in this branch** via `sw_sync_ecmds()`.
 
@@ -117,10 +120,10 @@ Smaller, still user-visible:
 
 ## Suggested order of follow-up PRs
 
-1. PVR: wrapping texture windows on 3D triangles + hybrid-render audit
-2. Options persistence + in-game pause/savestate
-3. Performance pass guided by the VMU overlay and a fixed game set
-4. Audio: reverb/interpolation once the SH-4 mix is in budget
+1. Options persistence + in-game pause/savestate
+2. Performance pass guided by the VMU overlay and a fixed game set
+3. Audio: reverb/interpolation once the SH-4 mix is in budget
+4. Hybrid-render PT vs TR ordering if overflow still glitches on hardware
 
 Do not wait on a full rewrite of either GPU path. Unai stays the accuracy
 backstop; PVR stays the speed path; audio should not be blocked on either.
@@ -135,7 +138,9 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - README documents audio, renderer limits, controls, and CMake knobs
 - Off-screen triangles/sprites/**lines** rasterize into VRAM (BIOS, F1 2001)
 - GP0(E2) texture windows applied per-pixel off-screen, origin-relative at
-  PVR vertices when the UV range does not wrap, and by tiling on-screen sprites
+  PVR vertices when the UV range does not wrap, by tiling on-screen sprites,
+  and by clipping wrapping triangles/quads on window-tile boundaries
+- Hybrid TR poly buffer overflow no longer drops primitives
 - 1:1 mirrored sprites get a sub-texel UV inset (Hercules/Rayman garbage column)
 - Savestate replay restores the GPU draw area for the off-screen path
 - Default AICA plugin streams dfsound's mix (voices, XA, CDDA, SPU IRQs)
