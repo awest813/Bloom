@@ -2424,10 +2424,11 @@ static void cmd_clear_image(const union PacketBuffer *pbuffer)
 	uint32_t color32;
 	struct poly poly;
 
-	/* horizontal position / size work in 16-pixel blocks */
+	/* horizontal position / size work in 16-pixel blocks:
+	 * X is rounded down, width is rounded up (PSX GP0(02)). */
 	x0 = pbuffer->U2[2] & 0x3f0;
 	y0 = pbuffer->U2[3] & 0x1ff;
-	w0 = ((pbuffer->U2[4] & 0x3f0) + 0xf) & ~0xf;
+	w0 = ((pbuffer->U2[4] & 0x3ff) + 0xf) & ~0xf;
 	h0 = pbuffer->U2[5] & 0x1ff;
 	color = bgr24_to_bgr15(pbuffer->U4[0]);
 
@@ -2538,7 +2539,8 @@ static void process_gpu_commands(void)
 				break;
 
 			case 0xe2:
-				/* TODO: Set texture window */
+				/* Texture window (GP0(E2)): store the mask/offset.
+				 * UV wrapping against this window is not applied yet. */
 				pvr.settings.mask_x = pbuffer->U4[0];
 				pvr.settings.mask_y = pbuffer->U4[0] >> 5;
 				pvr.settings.offt_x = pbuffer->U4[0] >> 10;

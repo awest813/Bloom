@@ -234,7 +234,7 @@ void shift_jis_to_ascii(char *dest, const char *src)
 		}
 
 		/* Don't know? Complain about it and convert to a space */
-		printf("Unhandled characted in Shift-JIS string: 0x%02hhx%02hhx\n",
+		printf("Unhandled character in Shift-JIS string: 0x%02hhx%02hhx\n",
 		       b1, b2);
 		*dest++ = ' ';
 	}
@@ -394,7 +394,7 @@ static void mcd_hotplug_vmu_cb(maple_device_t *dev, void *)
 
 void mcd_fs_init(void)
 {
-        maple_device_t *dev;
+	maple_device_t *dev;
 	unsigned int i;
 
 	timer = oneshot_timer_create(mcd_flush, mcd_data, 2000);

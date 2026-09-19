@@ -42,7 +42,6 @@ private:
 	float x0, y0, x1, y1, x2, y2;
 
 	pvr_ptr_t tex[2];
-	uint16_t *renderbuf;
 
 	void renderStep();
 };

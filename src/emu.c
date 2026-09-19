@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
+#include <strings.h>
 
 #include <libpcsxcore/misc.h>
 #include <libpcsxcore/plugins.h>
@@ -55,7 +57,7 @@ void SysMessage(const char *fmt, ...) {
 	ret = vsnprintf(msg, sizeof(msg), fmt, list);
 	va_end(list);
 
-	if (ret < sizeof(msg) && msg[ret - 1] == '\n')
+	if (ret > 0 && (size_t)ret < sizeof(msg) && msg[ret - 1] == '\n')
 		msg[ret - 1] = 0;
 
 	SysPrintf("%s\n", msg);
@@ -128,7 +130,13 @@ bool emu_check_cd(const char *path)
 		return false;
 	}
 
-	is_exe = !!strstr(path, ".exe");
+	is_exe = false;
+	if (path) {
+		const char *ext = strrchr(path, '.');
+
+		if (ext && !strcasecmp(ext, ".exe"))
+			is_exe = true;
+	}
 
 	if (!is_exe && CheckCdrom() != 0) {
 		ClosePlugins();
