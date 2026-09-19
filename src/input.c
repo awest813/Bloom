@@ -77,7 +77,7 @@ static void emu_attach_mouse_cb(maple_device_t *dev, void *)
 }
 
 void input_init(void) {
-        maple_device_t *dev;
+	maple_device_t *dev;
 	unsigned int i;
 
 	maple_attach_callback(MAPLE_FUNC_CONTROLLER, emu_attach_cont_cb, NULL);

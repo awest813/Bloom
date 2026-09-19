@@ -2,8 +2,13 @@
 /*
  * SPU emulation using the AICA
  *
+ * This plugin currently only implements SPU register and DMA access so
+ * games can probe SPU RAM. It does not play ADPCM, XA, CDDA, or fire IRQs.
+ *
  * Copyright (C) 2024 Paul Cercueil <paul@crapouillou.net>
  */
+
+#include <stdint.h>
 
 #include <dc/g2bus.h>
 #include <dc/sound/sound.h>

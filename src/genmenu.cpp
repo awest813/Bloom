@@ -22,7 +22,9 @@ extern "C" {
 
 #include <fstream>
 #include <functional>
+#include <cctype>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "background.h"
@@ -38,6 +40,22 @@ extern "C" {
 #define CREDITS_ENTRY_SIZE 11
 
 #define TOP_PATH "/"
+
+static std::string ascii_lower(std::string s)
+{
+	for (char &c : s)
+		c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+	return s;
+}
+
+static bool is_cd_image_ext(const std::string &ext)
+{
+	const std::string e = ascii_lower(ext);
+
+	return e == ".iso" || e == ".cue" || e == ".ccd" || e == ".exe"
+		|| e == ".mds" || e == ".pbp" || e == ".bin" || e == ".img"
+		|| e == ".mdf" || (WITH_CHD && e == ".chd");
+}
 
 static std::shared_ptr<MyMenu> myMenu;
 
@@ -118,9 +136,10 @@ void PathLabel::activate()
 			myMenu->prepareCredits(path);
 		} else if (emu_check_cd(path.c_str())) {
 			/* Launch ISO! */
+			myMenu->clearError();
 			myMenu->startExit();
 		} else {
-			/* TODO: show error */
+			myMenu->showError("Could not load this image");
 		}
 	} else {
 		myMenu->preparePopulate(path, back, false);
@@ -150,6 +169,16 @@ void TextLabel::cancel()
 	myMenu->preparePopulate("/rd/credits", true, false);
 }
 
+void InfoLabel::activate()
+{
+	/* No action for activate on info text */
+}
+
+void InfoLabel::cancel()
+{
+	myMenu->preparePopulate(fs::path(TOP_PATH), true, true);
+}
+
 MyMenu::MyMenu(std::shared_ptr<Font> fnt, const fs::path &path)
 {
 	m_bg = std::make_shared<Background>();
@@ -168,6 +197,11 @@ MyMenu::MyMenu(std::shared_ptr<Font> fnt, const fs::path &path)
 
 	m_font = fnt;
 	m_exited = false;
+
+	m_status = std::make_shared<Label>(m_font, "", 18, true, false);
+	m_status->setTranslate(Vector(320, 440, 20));
+	m_status->setTint(Color(1.0f, 1.0f, 0.35f, 0.35f));
+	m_scene->subAdd(m_status);
 
 	populate_dft();
 }
@@ -199,9 +233,10 @@ void MyMenu::populate_dft()
 						 [&] {
 		if (emu_check_cd(nullptr)) {
 			/* Launch CD-Rom! */
+			clearError();
 			startExit();
 		} else {
-			/* TODO: show error */
+			showError("No PlayStation disc detected");
 		}
 	}));
 
@@ -212,6 +247,7 @@ void MyMenu::populate_dft()
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Options", m_font_size,
 						 [&] {
+		prepareOptions();
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Credits", m_font_size,
@@ -233,6 +269,7 @@ void MyMenu::populate_dft()
 
 	m_input_allowed = true;
 	m_cursel = 0;
+	clearError();
 }
 
 void MyMenu::populate(fs::path path, bool back)
@@ -256,42 +293,39 @@ void MyMenu::populate(fs::path path, bool back)
 
 	fd = fs_open(path.c_str(), O_DIR);
 	if (fd == -1) {
-		fprintf(stderr, "Unable to open root directory: %s\n", path.c_str());
+		fprintf(stderr, "Unable to open directory: %s\n", path.c_str());
+		if (!m_path.empty() && m_path != path)
+			fd = fs_open(m_path.c_str(), O_DIR);
+		if (fd == -1) {
+			showError("Unable to open directory");
+			populate_dft();
+			return;
+		}
 		path = m_path;
-		fd = fs_open(path.c_str(), O_DIR);
 	}
 
 	while ((d = fs_readdir(fd))) {
-		fs::path filepath = d->name;
+		std::string name = d->name;
+		fs::path filepath = name;
 		is_file = fs::is_regular_file(path / filepath);
+
+		if (name == ".")
+			continue;
 
 		if (is_file) {
 			const std::string& ext = filepath.extension();
 
-			if (ext != ".iso"
-			    && ext != ".cue"
-			    && ext != ".ccd"
-			    && ext != ".exe"
-			    && ext != ".mds"
-			    && (!WITH_CHD || ext != ".chd")
-			    && (!is_credits || !ext.empty())
-			    && ext != ".pbp") {
+			if (!is_cd_image_ext(ext) && (!is_credits || !ext.empty()))
 				continue;
-			}
 		} else if (path == TOP_PATH) {
-			std::string name = d->name;
-
 			if (name != "cd"
 			    && name != "pc"
 			    && name != "ide"
 			    && name != "sd") {
 				continue;
 			}
-		} else if (is_credits) {
-			const std::string& name = d->name;
-
-			if (name == "." || name == "..")
-				continue;
+		} else if (name == "..") {
+			continue;
 		}
 
 		if (is_file)
@@ -320,6 +354,9 @@ void MyMenu::populate(fs::path path, bool back)
 	m_path = path;
 	m_cursel = 0;
 	m_input_allowed = true;
+	clearError();
+	if (m_entries.empty() && !is_credits)
+		showError("No disc images in this folder");
 }
 
 void MyMenu::preparePopulate(fs::path path, bool back, bool dft)
@@ -381,6 +418,90 @@ void MyMenu::populateCredits(fs::path path)
 
 	m_input_allowed = true;
 	m_cursel = 0;
+	clearError();
+}
+
+void MyMenu::prepareOptions()
+{
+	auto anim = std::make_shared<AnimFadeAway>(false, -1.0f,
+						   -800.0f, [=, this] {
+		populateOptions();
+	});
+
+	m_top_scene->animRemoveAll();
+	m_top_scene->animAdd(anim);
+	m_input_allowed = false;
+}
+
+void MyMenu::populateOptions()
+{
+	std::shared_ptr<AnimFadeIn> anim;
+	auto add_info = [&](const std::string &line) {
+		addEntry(std::make_shared<InfoLabel>(m_font, line, CREDITS_ENTRY_SIZE));
+	};
+
+	m_font_size = CREDITS_ENTRY_SIZE;
+	m_xoffset = 10;
+
+	m_entries.clear();
+	m_top_scene->animRemoveAll();
+	m_top_scene->subRemoveAll();
+	m_top_scene->setTranslate(Vector(800.0f, MENU_OFF_Y, 10));
+
+	add_info("Build options (compile-time)");
+	add_info("");
+	add_info(std::string("GPU: ") + GPU_PLUGIN +
+		 (HARDWARE_ACCELERATED ? " (faster, lower compatibility)"
+				       : " (slower, higher compatibility)"));
+	add_info(std::string("SPU: ") + SPU_PLUGIN +
+		 (std::string(SPU_PLUGIN) == "AICA"
+		  ? " (registers only, no audio yet)"
+		  : " (silent, SPU IRQs emulated)"));
+	add_info(std::string("Resolution: ") + (WITH_480P ? "640x480" : "320x240"));
+	add_info(std::string("Hybrid rendering: ") + (WITH_HYBRID_RENDERING ? "on" : "off"));
+	add_info(std::string("FSAA: ") + (WITH_FSAA ? "on" : "off"));
+	add_info(std::string("24-bit framebuffer: ") + (WITH_24BPP ? "on" : "off"));
+	add_info(std::string("Bilinear filtering: ") + (WITH_BILINEAR ? "on" : "off"));
+	add_info(std::string("Pixel clipping: ") + (WITH_CLIPPING ? "on" : "off"));
+	add_info(std::string("CHD images: ") + (WITH_CHD ? "on" : "off"));
+	add_info(std::string("IDE: ") + (WITH_IDE ? "on" : "off") +
+		 "   SD: " + (WITH_SDCARD ? "on" : "off"));
+	add_info("");
+	add_info("Controls");
+	add_info("A Cross     START+A Select");
+	add_info("B Circle    START+B R3");
+	add_info("X Square    START+X L3");
+	add_info("Y Triangle  Z Select  C L2  D R2");
+	add_info("L/R triggers  L1/R1    START+L/R  L2/R2");
+	add_info("START  Start (hold with another button for combos)");
+	add_info("START + analog stick  right stick");
+	add_info("START+A+B+X+Y  quit emulator");
+	add_info("START+D-pad Up  screenshot to /pc");
+	add_info("");
+	add_info("Change these with kos-ccmake. Press B to go back.");
+
+	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
+		m_top_scene->animRemoveAll();
+	});
+	m_top_scene->animAdd(anim);
+
+	m_input_allowed = true;
+	m_cursel = 0;
+	clearError();
+}
+
+void MyMenu::showError(const std::string &msg)
+{
+	if (m_status) {
+		m_status->setText(msg);
+		m_status->setTint(Color(1.0f, 1.0f, 0.35f, 0.35f));
+	}
+}
+
+void MyMenu::clearError()
+{
+	if (m_status)
+		m_status->setText("");
 }
 
 void MyMenu::setEntry(unsigned int entry) {
@@ -402,6 +523,14 @@ void MyMenu::inputEvent(const Event & evt) {
 
 	if (!m_input_allowed)
 		return;
+
+	if (m_entries.empty()) {
+		if (evt.key == Event::KeyCancel)
+			preparePopulate(pwd().parent_path(), true,
+					pwd().parent_path() == pwd() ||
+					pwd().parent_path() == "/rd");
+		return;
+	}
 
 	switch(evt.key) {
 	case Event::KeyUp:

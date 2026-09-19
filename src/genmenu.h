@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -87,15 +88,23 @@ public:
 	virtual void cancel();
 };
 
+class InfoLabel : public MyLabel {
+public:
+	InfoLabel(std::shared_ptr<Font> fh, const std::string& text, int size)
+		: MyLabel(fh, text, size, false,
+			  Color(1.0f, 1.0f, 1.0f, 1.0f),
+			  Color(1.0f, 1.0f, 1.0f, 1.0f))
+	{
+	}
+
+	~InfoLabel() {}
+
+	virtual void activate();
+	virtual void cancel();
+};
+
 class MainMenuLabel : public MyLabel {
 public:
-	enum MainMenuAction {
-		LOAD_CDROM,
-		LOAD_CDIMAGE,
-		OPTIONS,
-		CREDITS,
-	};
-
 	MainMenuLabel(std::shared_ptr<Font> fh, const std::string& text, int size,
 		      const Action& action)
 		: MyLabel(fh, text, size, true,
@@ -126,9 +135,14 @@ public:
 	void populate_dft();
 	void populate(fs::path path, bool back);
 	void populateCredits(fs::path path);
+	void populateOptions();
 
 	void preparePopulate(fs::path path, bool back, bool dft);
 	void prepareCredits(fs::path path);
+	void prepareOptions();
+
+	void showError(const std::string &msg);
+	void clearError();
 
 	void setEntry(unsigned int entry);
 
@@ -155,6 +169,7 @@ private:
 	std::shared_ptr<Font> m_font;
 	bool m_exited;
 	std::shared_ptr<Background> m_bg;
+	std::shared_ptr<Label> m_status;
 
 	std::shared_ptr<Scene> m_top_scene;
 };
