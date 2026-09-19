@@ -2427,7 +2427,7 @@ static void cmd_clear_image(const union PacketBuffer *pbuffer)
 	/* horizontal position / size work in 16-pixel blocks */
 	x0 = pbuffer->U2[2] & 0x3f0;
 	y0 = pbuffer->U2[3] & 0x1ff;
-	w0 = ((pbuffer->U2[4] & 0x3f0) + 0xf) & ~0xf;
+	w0 = ((pbuffer->U2[4] & 0x3ff) + 0xf) & ~0xf;
 	h0 = pbuffer->U2[5] & 0x1ff;
 	color = bgr24_to_bgr15(pbuffer->U4[0]);
 
