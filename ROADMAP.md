@@ -48,21 +48,24 @@ attacked:
 
 1. **Off-screen VRAM draws** (upstream issue
    [#10](https://github.com/pcercuei/bloom/issues/10)).
-   BIOS boot logo and Formula One 2001 render into off-screen draw areas and
-   then sample or read back that VRAM. PVR currently only draws relative to
-   the visible framebuffer. Plan: software-rasterize clipped-off primitives
-   into `gpu.vram` as a stopgap, then render-to-texture for the hot path.
-2. **GP0(E2) texture window.** The mask/offset fields are stored and never
-   applied to UVs. Several 2D games depend on this.
+   **Done in this branch:** triangles and sprites whose clipped bbox is
+   entirely off-screen are rasterized into `gpu.vram` and the texture cache
+   is invalidated. Draw-area E3–E5 are restored from savestate ecmds.
+   Remaining: render-to-texture for the hot path; lines are still skipped.
+2. **GP0(E2) texture window.**
+   **Done in this branch:** mask/offset decoded like Unai; applied per-pixel
+   in the off-screen software path and at vertices on PVR when the primitive
+   does not wrap the window. Remaining: on-screen wrapping (repeating 8×8
+   tiles on large polys).
 3. **Horizontally flipped sprites** (upstream issue
    [#9](https://github.com/pcercuei/bloom/issues/9)).
-   One-pixel garbage column from sampling the neighbouring texel. Needs a UV
-   inset that does not break unflipped sprites.
+   **Done in this branch:** 1:1 mirrored sprites get a sub-texel UV inset so
+   the PVR does not sample the neighbouring column/row.
 4. **Hybrid rendering.** Required for some effects, currently a source of
    glitches (MGS was reported to need it off). Audit the poly buffer flush
    vs. software fallback.
-5. **Savestate draw-area restore** for E3–E5, otherwise the off-screen
-   fallback will skip BIOS-style draws after a state load.
+5. **Savestate draw-area restore** for E3–E5.
+   **Done in this branch** via `sw_sync_ecmds()`.
 
 Keep Unai as the "it should look right" reference. Every PVR fix should be
 diffed against Unai on a short game list (BIOS, Crash, Spyro, MGS, F1 2001,
@@ -120,10 +123,9 @@ Smaller, still user-visible:
 ## Suggested order of follow-up PRs
 
 1. Audio: dfsound-on-AICA MVP (voices + XA, no reverb)
-2. PVR: off-screen VRAM software fallback + GP0(E2) window
+2. PVR: on-screen wrapping texture windows + hybrid-render audit
 3. Options persistence + in-game pause/savestate
-4. PVR: flipped-sprite seam + hybrid-render audit
-5. Performance pass guided by the VMU overlay and a fixed game set
+4. Performance pass guided by the VMU overlay and a fixed game set
 
 Do not wait on a full rewrite of either GPU path. Unai stays the accuracy
 backstop; PVR stays the speed path; audio should not be blocked on either.
@@ -136,4 +138,8 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Failed disc/image loads show an on-screen error instead of doing nothing
 - Options screen shows compile-time flags and the controller map
 - README documents audio, renderer limits, controls, and CMake knobs
-- AICA plugin comments now match the register-only implementation
+- Off-screen triangles/sprites rasterize into VRAM (BIOS, F1 2001)
+- GP0(E2) texture windows applied per-pixel off-screen and at vertices on PVR
+  when the primitive does not wrap
+- 1:1 mirrored sprites get a sub-texel UV inset (Hercules/Rayman garbage column)
+- Savestate replay restores the GPU draw area for the off-screen path

@@ -247,6 +247,8 @@ struct pvr_renderer {
 	uint16_t inval_counter;
 	uint16_t inval_counter_at_start;
 
+	uint8_t win_mask_x, win_mask_y, win_off_x, win_off_y;
+
 	struct texture_settings settings;
 
 	struct texture_page_16bpp textures16_mask[32];
@@ -272,8 +274,30 @@ struct pvr_renderer {
 
 static void process_poly(struct poly *poly, bool scissor);
 static void poly_enqueue(pvr_list_t list, const struct poly *poly);
+static void sw_sync_ecmds(const uint32_t *ecmds);
+static void texwin_set(uint32_t cmd);
 
 static struct pvr_renderer pvr;
+
+static const uint8_t texwin_mask_tbl[32] = {
+	255, 7, 15, 7, 31, 7, 15, 7, 63, 7, 15, 7, 31, 7, 15, 7,
+	127, 7, 15, 7, 31, 7, 15, 7, 63, 7, 15, 7, 31, 7, 15, 7
+};
+
+static void texwin_set(uint32_t cmd)
+{
+	pvr.win_mask_x = texwin_mask_tbl[cmd & 0x1f];
+	pvr.win_mask_y = texwin_mask_tbl[(cmd >> 5) & 0x1f];
+	pvr.win_off_x = ((cmd >> 10) & 0x1f) << 3;
+	pvr.win_off_y = ((cmd >> 15) & 0x1f) << 3;
+	pvr.win_off_x &= (uint8_t)~pvr.win_mask_x;
+	pvr.win_off_y &= (uint8_t)~pvr.win_mask_y;
+
+	pvr.settings.mask_x = cmd;
+	pvr.settings.mask_y = cmd >> 5;
+	pvr.settings.offt_x = cmd >> 10;
+	pvr.settings.offt_y = cmd >> 15;
+}
 
 static struct poly polybuf[POLY_BUFFER_SIZE / sizeof(struct poly)];
 
@@ -426,6 +450,8 @@ void pvr_renderer_init(void)
 
 	pvr.start_x = 0;
 	pvr.start_y = 0;
+	pvr.win_mask_x = 255;
+	pvr.win_mask_y = 255;
 
 	if (!WITH_24BPP) {
 		pvr.fake_tex = pvr_mem_malloc(sizeof(fake_tex_data));
@@ -447,6 +473,7 @@ void renderer_sync_ecmds(uint32_t *ecmds)
 {
 	int dummy;
 	do_cmd_list(&ecmds[1], 6, &dummy, &dummy, &dummy);
+	sw_sync_ecmds(ecmds);
 }
 
 static inline struct texture_page_4bpp *
@@ -1150,6 +1177,53 @@ static void pvr_add_clip(uint16_t zoffset)
 	}
 }
 
+/*
+ * The PSX samples UVs at the integer pixel position, the PVR at the pixel
+ * centre. On a mirrored 1:1 sprite (U or V stepping back exactly one texel
+ * per pixel) that lands on the neighbouring texel and shows a garbage column
+ * or row, so the mirrored axis is pushed forward by just under one texel.
+ *
+ * Only exact 1:1 mirrors get this: on 3D geometry the same offset makes
+ * textures shimmer.
+ */
+static void uv_mirror_offset(const struct vertex_coords *coords,
+			     float *uoff, float *voff)
+{
+	int x10 = coords[1].x - coords[0].x, y10 = coords[1].y - coords[0].y;
+	int x20 = coords[2].x - coords[0].x, y20 = coords[2].y - coords[0].y;
+	int u10 = coords[1].u - coords[0].u, u20 = coords[2].u - coords[0].u;
+	int v10 = coords[1].v - coords[0].v, v20 = coords[2].v - coords[0].v;
+	int det = x10 * y20 - x20 * y10;
+	int n[4] = {
+		u10 * y20 - u20 * y10,
+		x10 * u20 - x20 * u10,
+		v10 * y20 - v20 * y10,
+		x10 * v20 - x20 * v10,
+	};
+	unsigned int i;
+
+	if (det < 0) {
+		det = -det;
+		for (i = 0; i < 4; i++)
+			n[i] = -n[i];
+	}
+
+	if (likely((n[0] | n[1] | n[2] | n[3]) >= 0 || det == 0))
+		return;
+
+	/* U reaches here shifted left by the texture depth (x1/x2/x4) */
+	if (n[1] == 0) {
+		if (n[0] == -det)
+			*uoff = 15.0f / 16.0f;
+		else if (n[0] == -2 * det)
+			*uoff = 30.0f / 16.0f;
+		else if (n[0] == -4 * det)
+			*uoff = 60.0f / 16.0f;
+	}
+	if (n[3] == -det && n[2] == 0)
+		*voff = 15.0f / 16.0f;
+}
+
 __pvr
 static void draw_prim(const pvr_poly_hdr_t *hdr,
 		      const struct vertex_coords *coords,
@@ -1163,6 +1237,10 @@ static void draw_prim(const pvr_poly_hdr_t *hdr,
 	pvr_vertex_t *vert;
 	pvr_vertex_part2_t *vert2;
 	unsigned int i;
+	float uoff = 0.0f, voff = 0.0f;
+
+	if (textured && nb >= 3)
+		uv_mirror_offset(coords, &uoff, &voff);
 
 	if (unlikely(hdr)) {
 		sq_hdr = pvr_dr_target();
@@ -1173,8 +1251,8 @@ static void draw_prim(const pvr_poly_hdr_t *hdr,
 	for (i = 0; i < nb; i++) {
 		register float fr0 asm("fr0") = (float)coords[i].x;
 		register float fr1 asm("fr1") = (float)coords[i].y;
-		register float fr2 asm("fr2") = (float)coords[i].u;
-		register float fr3 asm("fr3") = (float)(coords[i].v + voffset);
+		register float fr2 asm("fr2") = (float)coords[i].u + uoff;
+		register float fr3 asm("fr3") = (float)(coords[i].v + voffset) + voff;
 
 		asm inline("ftrv xmtrx, fv0\n"
 			   : "+f"(fr0), "+f"(fr1), "+f"(fr2), "+f"(fr3));
@@ -2192,6 +2270,35 @@ static void process_poly(struct poly *poly, bool scissor)
 		poly->flags |= POLY_NOCLIP;
 
 	if (poly->flags & POLY_TEXTURED) {
+		unsigned int nb = poly_get_vertex_count(poly);
+		uint16_t vmin, vmax;
+
+		umin = umax = poly->coords[0].u;
+		vmin = vmax = poly->coords[0].v;
+		for (i = 1; i < nb; i++) {
+			if (poly->coords[i].u < umin)
+				umin = poly->coords[i].u;
+			if (poly->coords[i].u > umax)
+				umax = poly->coords[i].u;
+			if (poly->coords[i].v < vmin)
+				vmin = poly->coords[i].v;
+			if (poly->coords[i].v > vmax)
+				vmax = poly->coords[i].v;
+		}
+
+		/* Apply GP0(E2) at vertices when the primitive does not wrap
+		 * the window. Wrapping needs per-pixel masks (off-screen SW
+		 * path); remapping endpoints would collapse the UVs. */
+		if ((umax - umin) <= pvr.win_mask_x
+		    && (vmax - vmin) <= pvr.win_mask_y) {
+			for (i = 0; i < nb; i++) {
+				poly->coords[i].u = (poly->coords[i].u & pvr.win_mask_x)
+					| pvr.win_off_x;
+				poly->coords[i].v = (poly->coords[i].v & pvr.win_mask_y)
+					| pvr.win_off_y;
+			}
+		}
+
 		if (scissor && unlikely(poly->bpp != TEXTURE_4BPP)) {
 			umin = poly_get_umin(poly);
 			umax = poly_get_umax(poly) - 1;
@@ -2474,6 +2581,343 @@ static inline bool pvr_clip_test(void)
 		|| pvr.draw_y2 != gpu.screen.vres;
 }
 
+/*
+ * Off-screen drawing. Primitives are rendered on the PVR relative to the
+ * displayed area, so one that lies entirely outside it never reaches PSX VRAM,
+ * and a game that draws a texture there and then samples it (BIOS menu, F1 2001
+ * car livery) gets stale VRAM. Those primitives are rasterized in software
+ * into gpu.vram, then the texture cache covering them is invalidated.
+ */
+static struct {
+	int x1, y1, x2, y2;
+	int dx, dy;
+} sw = { .x2 = 1024, .y2 = 512 };
+
+static void sw_sync_ecmds(const uint32_t *ecmds)
+{
+	texwin_set(ecmds[2]);
+	sw.x1 = ecmds[3] & 0x3ff;
+	sw.y1 = (ecmds[3] >> 10) & 0x1ff;
+	sw.x2 = (ecmds[4] & 0x3ff) + 1;
+	sw.y2 = ((ecmds[4] >> 10) & 0x1ff) + 1;
+	sw.dx = ((int32_t)ecmds[5] << 21) >> 21;
+	sw.dy = ((int32_t)ecmds[5] << 10) >> 21;
+
+	if (sw.x2 <= sw.x1)
+		sw.x2 = 1024;
+	if (sw.y2 <= sw.y1)
+		sw.y2 = 512;
+}
+
+struct sw_vert {
+	int x, y, u, v;
+	int r, g, b;
+};
+
+static bool sw_bbox_offscreen(int *x0, int *y0, int *x1, int *y1)
+{
+	*x0 = *x0 > sw.x1 ? *x0 : sw.x1;
+	*y0 = *y0 > sw.y1 ? *y0 : sw.y1;
+	*x1 = *x1 + 1 < sw.x2 ? *x1 + 1 : sw.x2;
+	*y1 = *y1 + 1 < sw.y2 ? *y1 + 1 : sw.y2;
+
+	return *x1 > *x0 && *y1 > *y0
+		&& !overlap_draw_area(*x0, *y0, *x1, *y1);
+}
+
+static uint16_t sw_texel(unsigned int u, unsigned int v, uint16_t clut,
+			 uint16_t texpage)
+{
+	unsigned int tx = (texpage & 0xf) * 64, ty = ((texpage >> 4) & 1) * 256;
+	unsigned int cx = (clut & 0x3f) << 4, cy = (clut >> 6) & 0x1ff;
+	uint16_t idx;
+
+	u = (u & pvr.win_mask_x) | pvr.win_off_x;
+	v = (v & pvr.win_mask_y) | pvr.win_off_y;
+	u &= 0xff;
+	v &= 0xff;
+
+	switch ((texpage >> 7) & 3) {
+	case 0:
+		idx = (gpu.vram[((ty + v) & 511) * 1024 + ((tx + (u >> 2)) & 1023)]
+		       >> ((u & 3) * 4)) & 0xf;
+		return gpu.vram[cy * 1024 + ((cx + idx) & 1023)];
+	case 1:
+		idx = (gpu.vram[((ty + v) & 511) * 1024 + ((tx + (u >> 1)) & 1023)]
+		       >> ((u & 1) * 8)) & 0xff;
+		return gpu.vram[cy * 1024 + ((cx + idx) & 1023)];
+	default:
+		return gpu.vram[((ty + v) & 511) * 1024 + ((tx + u) & 1023)];
+	}
+}
+
+static void sw_plot(int x, int y, uint16_t c, bool semi)
+{
+	uint16_t *dst = &gpu.vram[y * 1024 + x];
+	int sr, sg, sb, dr, dg, db;
+
+	if (pvr.check_mask && (*dst & 0x8000))
+		return;
+
+	if (semi) {
+		sr = c & 31; sg = (c >> 5) & 31; sb = (c >> 10) & 31;
+		dr = *dst & 31; dg = (*dst >> 5) & 31; db = (*dst >> 10) & 31;
+
+		switch ((pvr.gp1 >> 5) & 3) {
+		case 0:
+			sr = (dr + sr) / 2; sg = (dg + sg) / 2; sb = (db + sb) / 2;
+			break;
+		case 1:
+			sr = dr + sr; sg = dg + sg; sb = db + sb;
+			break;
+		case 2:
+			sr = dr - sr; sg = dg - sg; sb = db - sb;
+			break;
+		default:
+			sr = dr + sr / 4; sg = dg + sg / 4; sb = db + sb / 4;
+			break;
+		}
+
+		sr = sr < 0 ? 0 : sr > 31 ? 31 : sr;
+		sg = sg < 0 ? 0 : sg > 31 ? 31 : sg;
+		sb = sb < 0 ? 0 : sb > 31 ? 31 : sb;
+		c = (c & 0x8000) | sr | (sg << 5) | (sb << 10);
+	}
+
+	*dst = c | (pvr.set_mask ? 0x8000 : 0);
+}
+
+static void sw_shade(int x, int y, int u, int v, int r, int g, int b,
+		     bool textured, bool semi, bool raw, uint16_t clut,
+		     uint16_t texpage)
+{
+	uint16_t t;
+	int tr, tg, tb;
+
+	if (!textured) {
+		sw_plot(x, y, (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10), semi);
+		return;
+	}
+
+	t = sw_texel(u, v, clut, texpage);
+	if (!t)
+		return;
+
+	if (!raw) {
+		tr = ((t & 31) * r) >> 7;
+		tg = (((t >> 5) & 31) * g) >> 7;
+		tb = (((t >> 10) & 31) * b) >> 7;
+		t = (t & 0x8000) | (tr > 31 ? 31 : tr)
+			| ((tg > 31 ? 31 : tg) << 5) | ((tb > 31 ? 31 : tb) << 10);
+	}
+
+	sw_plot(x, y, t, semi && (t & 0x8000));
+}
+
+static int sw_edge(const struct sw_vert *a, const struct sw_vert *b, int x, int y)
+{
+	return (b->x - a->x) * (y - a->y) - (b->y - a->y) * (x - a->x);
+}
+
+static void sw_triangle(const struct sw_vert *v0, const struct sw_vert *v1,
+			const struct sw_vert *v2, bool textured, bool semi,
+			bool raw, uint16_t clut, uint16_t texpage)
+{
+	const struct sw_vert *tmp;
+	int area = sw_edge(v0, v1, v2->x, v2->y);
+	int minx, maxx, miny, maxy, x, y, i;
+	int w0r, w1r, w2r, w0, w1, w2;
+	int64_t row[5], val[5], ddx[5], ddy[5];
+
+	if (area == 0)
+		return;
+	if (area < 0) {
+		tmp = v1;
+		v1 = v2;
+		v2 = tmp;
+		area = -area;
+	}
+
+	minx = v0->x < v1->x ? v0->x : v1->x;
+	minx = minx < v2->x ? minx : v2->x;
+	maxx = v0->x > v1->x ? v0->x : v1->x;
+	maxx = maxx > v2->x ? maxx : v2->x;
+	miny = v0->y < v1->y ? v0->y : v1->y;
+	miny = miny < v2->y ? miny : v2->y;
+	maxy = v0->y > v1->y ? v0->y : v1->y;
+	maxy = maxy > v2->y ? maxy : v2->y;
+
+	minx = minx > sw.x1 ? minx : sw.x1;
+	miny = miny > sw.y1 ? miny : sw.y1;
+	maxx = maxx < sw.x2 ? maxx : sw.x2;
+	maxy = maxy < sw.y2 ? maxy : sw.y2;
+	if (minx >= maxx || miny >= maxy)
+		return;
+
+	w0r = sw_edge(v1, v2, minx, miny);
+	w1r = sw_edge(v2, v0, minx, miny);
+	w2r = sw_edge(v0, v1, minx, miny);
+
+	for (i = 0; i < 5; i++) {
+		int f0, f1, f2;
+
+		switch (i) {
+		case 0: f0 = v0->u; f1 = v1->u; f2 = v2->u; break;
+		case 1: f0 = v0->v; f1 = v1->v; f2 = v2->v; break;
+		case 2: f0 = v0->r; f1 = v1->r; f2 = v2->r; break;
+		case 3: f0 = v0->g; f1 = v1->g; f2 = v2->g; break;
+		default: f0 = v0->b; f1 = v1->b; f2 = v2->b; break;
+		}
+
+		ddx[i] = ((int64_t)((v1->y - v2->y) * f0 + (v2->y - v0->y) * f1
+				    + (v0->y - v1->y) * f2) << 16) / area;
+		ddy[i] = ((int64_t)((v2->x - v1->x) * f0 + (v0->x - v2->x) * f1
+				    + (v1->x - v0->x) * f2) << 16) / area;
+		row[i] = (((int64_t)w0r * f0 + (int64_t)w1r * f1
+			   + (int64_t)w2r * f2) << 16) / area + 0x400;
+	}
+
+	for (y = miny; y < maxy; y++) {
+		w0 = w0r;
+		w1 = w1r;
+		w2 = w2r;
+		for (i = 0; i < 5; i++)
+			val[i] = row[i];
+
+		for (x = minx; x < maxx; x++) {
+			if ((w0 | w1 | w2) >= 0)
+				sw_shade(x, y, (int)(val[0] >> 16), (int)(val[1] >> 16),
+					 (int)(val[2] >> 16), (int)(val[3] >> 16),
+					 (int)(val[4] >> 16), textured, semi, raw, clut,
+					 texpage);
+
+			w0 -= v2->y - v1->y;
+			w1 -= v0->y - v2->y;
+			w2 -= v1->y - v0->y;
+			for (i = 0; i < 5; i++)
+				val[i] += ddx[i];
+		}
+
+		w0r += v2->x - v1->x;
+		w1r += v0->x - v2->x;
+		w2r += v1->x - v0->x;
+		for (i = 0; i < 5; i++)
+			row[i] += ddy[i];
+	}
+}
+
+/* Returns true if the primitive was off-screen and has been drawn here. */
+__noinline
+static bool sw_draw(const union PacketBuffer *pbuffer, uint32_t cmd)
+{
+	bool multicolor = cmd & 0x10, textured = cmd & 0x04;
+	bool semi = cmd & 0x02, raw = cmd & 0x01;
+	const uint32_t *buf = pbuffer->U4;
+	int bx0, by0, bx1, by1, x, y, w, h, j, k;
+	struct sw_vert v[4];
+	uint16_t clut = 0, texpage = pvr.gp1;
+	unsigned int i, nb;
+	uint32_t c;
+
+	if ((cmd >> 5) == 0x1) {
+		nb = (cmd & 0x08) ? 4 : 3;
+		c = buf[0];
+
+		for (i = 0; i < nb; i++) {
+			if (i == 0 || multicolor)
+				c = *buf++;
+
+			v[i].r = c & 0xff;
+			v[i].g = (c >> 8) & 0xff;
+			v[i].b = (c >> 16) & 0xff;
+			if (textured && raw)
+				v[i].r = v[i].g = v[i].b = 0x80;
+
+			v[i].x = (((int32_t)*buf << 21) >> 21) + sw.dx;
+			v[i].y = (((int32_t)*buf << 5) >> 21) + sw.dy;
+			buf++;
+
+			if (textured) {
+				v[i].u = *buf & 0xff;
+				v[i].v = (*buf >> 8) & 0xff;
+				if (i == 0)
+					clut = (*buf >> 16) & 0x7fff;
+				if (i == 1)
+					texpage = *buf >> 16;
+				buf++;
+			} else {
+				v[i].u = v[i].v = 0;
+			}
+		}
+
+		bx0 = bx1 = v[0].x;
+		by0 = by1 = v[0].y;
+		for (i = 1; i < nb; i++) {
+			bx0 = v[i].x < bx0 ? v[i].x : bx0;
+			bx1 = v[i].x > bx1 ? v[i].x : bx1;
+			by0 = v[i].y < by0 ? v[i].y : by0;
+			by1 = v[i].y > by1 ? v[i].y : by1;
+		}
+		if (likely(!sw_bbox_offscreen(&bx0, &by0, &bx1, &by1)))
+			return false;
+
+		sw_triangle(&v[0], &v[1], &v[2], textured, semi, raw, clut, texpage);
+		if (nb == 4)
+			sw_triangle(&v[1], &v[2], &v[3], textured, semi, raw, clut, texpage);
+	} else {
+		int u0 = 0, v0 = 0, r, g, b;
+
+		c = *buf++;
+		r = c & 0xff;
+		g = (c >> 8) & 0xff;
+		b = (c >> 16) & 0xff;
+		if (textured && raw)
+			r = g = b = 0x80;
+
+		x = (((int32_t)*buf << 21) >> 21) + sw.dx;
+		y = (((int32_t)*buf << 5) >> 21) + sw.dy;
+		buf++;
+
+		if (textured) {
+			u0 = *buf & 0xff;
+			v0 = (*buf >> 8) & 0xff;
+			clut = (*buf >> 16) & 0x7fff;
+			buf++;
+		}
+
+		switch ((cmd >> 3) & 3) {
+		case 0:
+			w = *buf & 0x3ff;
+			h = (*buf >> 16) & 0x1ff;
+			break;
+		case 1:
+			w = h = 1;
+			break;
+		case 2:
+			w = h = 8;
+			break;
+		default:
+			w = h = 16;
+			break;
+		}
+
+		bx0 = x;
+		by0 = y;
+		bx1 = x + w - 1;
+		by1 = y + h - 1;
+		if (likely(!sw_bbox_offscreen(&bx0, &by0, &bx1, &by1)))
+			return false;
+
+		for (j = by0; j < by1; j++)
+			for (k = bx0; k < bx1; k++)
+				sw_shade(k, j, u0 + k - x, v0 + j - y, r, g, b,
+					 textured, semi, raw, clut, pvr.gp1);
+	}
+
+	pvr_update_caches(bx0, by0, bx1 - bx0, by1 - by0, true);
+	return true;
+}
+
 __pvr
 static void process_gpu_commands(void)
 {
@@ -2513,6 +2957,10 @@ static void process_gpu_commands(void)
 
 		blending_mode = semi_trans ? pvr.blending_mode : BLENDING_MODE_NONE;
 
+		if (((cmd >> 5) == 0x1 || (cmd >> 5) == 0x3)
+		    && unlikely(sw_draw(pbuffer, cmd)))
+			continue;
+
 		switch (cmd >> 5) {
 		case 0x0:
 			switch (cmd) {
@@ -2539,18 +2987,16 @@ static void process_gpu_commands(void)
 				break;
 
 			case 0xe2:
-				/* Texture window (GP0(E2)): store the mask/offset.
-				 * UV wrapping against this window is not applied yet. */
-				pvr.settings.mask_x = pbuffer->U4[0];
-				pvr.settings.mask_y = pbuffer->U4[0] >> 5;
-				pvr.settings.offt_x = pbuffer->U4[0] >> 10;
-				pvr.settings.offt_y = pbuffer->U4[0] >> 15;
+				/* Texture window (GP0(E2)) */
+				texwin_set(pbuffer->U4[0]);
 				break;
 
 			case 0xe3:
 				/* Set top-left corner of drawing area */
 				draw_x = pbuffer->U4[0] & 0x3ff;
 				draw_y = (pbuffer->U4[0] >> 10) & 0x1ff;
+				sw.x1 = draw_x;
+				sw.y1 = draw_y;
 				draw_updated = draw_x - pvr.start_x != pvr.draw_x1
 					|| draw_y - pvr.start_y != pvr.draw_y1;
 
@@ -2569,6 +3015,8 @@ static void process_gpu_commands(void)
 				/* Set bottom-right corner of drawing area */
 				draw_x = (pbuffer->U4[0] & 0x3ff) + 1;
 				draw_y = ((pbuffer->U4[0] >> 10) & 0x1ff) + 1;
+				sw.x2 = draw_x;
+				sw.y2 = draw_y;
 				draw_updated = draw_x - pvr.start_x != pvr.draw_x2
 					|| draw_y - pvr.start_y != pvr.draw_y2;
 
@@ -2587,6 +3035,8 @@ static void process_gpu_commands(void)
 				/* Set drawing offsets */
 				pvr.draw_dx = ((int32_t)pbuffer->U4[0] << 21) >> 21;
 				pvr.draw_dy = ((int32_t)pbuffer->U4[0] << 10) >> 21;
+				sw.dx = pvr.draw_dx;
+				sw.dy = pvr.draw_dy;
 				pvr.draw_offt_x = pvr.draw_dx - pvr.start_x + gpu.screen.x;
 				pvr.draw_offt_y = pvr.draw_dy - pvr.start_y + gpu.screen.y;
 				if (0)

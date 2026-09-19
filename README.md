@@ -58,9 +58,11 @@ Known limitations
   with a silent backend and does emulate SPU IRQs (needed by some games such
   as Metal Gear Solid).
 
-- The PVR renderer does not implement texture windows, off-screen VRAM
-  rendering, or several other GPU features. Use Unai when a title needs
-  accurate drawing.
+- The PVR renderer still has holes (wrapping texture windows on-screen,
+  hybrid-render glitches). It now software-rasterizes **off-screen** draws
+  into VRAM (BIOS boot logo, F1 2001 car textures), applies non-wrapping
+  texture windows, and insets UVs on 1:1 mirrored sprites. Use Unai when a
+  title still needs accurate drawing.
 
 - The in-menu **Options** screen is currently read-only. Renderer, resolution,
   and similar flags are compile-time CMake options.
