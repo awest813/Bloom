@@ -2,8 +2,9 @@
 /*
  * SPU emulation using the AICA
  *
- * This plugin currently only implements SPU register and DMA access so
- * games can probe SPU RAM. It does not play ADPCM, XA, CDDA, or fire IRQs.
+ * Unused. The AICA CMake plugin is now pcsx_rearmed dfsound mixed on the
+ * SH-4, with src/aica_out.c streaming the result through KOS snd_stream.
+ * This file remains as the old register/DMA-only stub.
  *
  * Copyright (C) 2024 Paul Cercueil <paul@crapouillou.net>
  */

@@ -10,35 +10,30 @@ work that still needs to happen.
 ## Current shape
 
 Bloom is a KallistiOS port of pcsx_rearmed + Lightrec, with a custom PVR GPU
-path and a thin AICA SPU stub. The CPU/JIT, CD-ROM, VMU memory cards, and input
-layer are far enough along to boot many titles. Audio, PVR compatibility, and
-runtime UX are not.
+path and dfsound mixed to the AICA. The CPU/JIT, CD-ROM, VMU memory cards,
+input, and basic audio are far enough along to boot many titles. PVR
+compatibility, runtime UX, and speed are not.
 
 ## Priority 1 — game audio
 
-**Why first:** the README already advertised "no sound," and the default AICA
-plugin still has empty `SPUasync`, `SPUplayADPCMchannel`, `SPUplayCDDAchannel`,
-ADSR, reverb, and IRQ callbacks. Users treat that as the #1 missing feature.
+**Why first:** the README already advertised "no sound," and the old AICA
+stub had empty `SPUasync` / XA / CDDA.
 
-Suggested sequence:
+**Done in this branch:** `SPU_PLUGIN=AICA` (the default) is now pcsx_rearmed
+dfsound mixed on the SH-4, with `src/aica_out.c` streaming stereo S16 44100
+through KOS `snd_stream`. Voices, XA, CDDA, and SPU IRQs come from dfsound.
+Reverb and Gaussian interpolation stay off. If the stream fails to start,
+dfsound falls back to the silent `nullsnd` driver (IRQs still fire).
 
-1. Keep `SPU_PLUGIN=Null` (dfsound + `nullsnd`) as the correctness baseline.
-   It already emulates SPU IRQs (Metal Gear Solid uses the IRQ as a clock).
-2. Make Null the documented recommendation for IRQ-sensitive games until AICA
-   playback exists. Consider switching the CMake default once the silent
-   dfsound path is confirmed cheaper than a broken AICA default.
-3. Implement real output on AICA:
-   - 24 ADPCM voices with ADSR
-   - XA-ADPCM (`SPUplayADPCMchannel`)
-   - CDDA (`SPUplayCDDAchannel`) mixed through AICA
-   - SPU IRQ and noise/reverb at least well enough for games that probe them
-4. Reuse pcsx_rearmed dfsound for decode, and only replace the backend with
-   AICA DMA/streaming (see also [AICAOS](https://github.com/pcercuei/AICAOS)).
-   Do not start from a clean-room SPU.
+`SPU_PLUGIN=Null` is the same mixer with no output, still useful as a
+correctness baseline.
 
-Risk: AICA RAM is 2 MiB; PS1 SPU RAM is 512 KiB plus mixing buffers. Budget
-voice decode vs. CDDA vs. Lightrec's code buffer carefully (especially on
-unmodded 16 MiB units).
+Remaining:
+
+1. Turn reverb / interpolation back on once the mix is cheap enough.
+2. Budget AICA RAM vs. Lightrec if 16 MiB units still run out of SH-4 RAM
+   (dfsound's 512 KiB SPU image lives in system RAM today).
+3. Confirm IRQ-sensitive titles (MGS) against Null vs. AICA on hardware.
 
 ## Priority 2 — PVR renderer correctness
 
@@ -48,15 +43,16 @@ attacked:
 
 1. **Off-screen VRAM draws** (upstream issue
    [#10](https://github.com/pcercuei/bloom/issues/10)).
-   **Done in this branch:** triangles and sprites whose clipped bbox is
-   entirely off-screen are rasterized into `gpu.vram` and the texture cache
-   is invalidated. Draw-area E3–E5 are restored from savestate ecmds.
-   Remaining: render-to-texture for the hot path; lines are still skipped.
+   **Done in this branch:** triangles, sprites, and **lines** whose clipped
+   bbox is entirely off-screen are rasterized into `gpu.vram` and the texture
+   cache is invalidated. Draw-area E3–E5 are restored from savestate ecmds.
+   Remaining: render-to-texture for the hot path.
 2. **GP0(E2) texture window.**
    **Done in this branch:** mask/offset decoded like Unai; applied per-pixel
-   in the off-screen software path and at vertices on PVR when the primitive
-   does not wrap the window. Remaining: on-screen wrapping (repeating 8×8
-   tiles on large polys).
+   in the off-screen software path; PVR vertices use origin-relative remap
+   when the half-open UV range sits in one tile; **on-screen sprites that wrap
+   are split into window-sized quads**. Remaining: wrapping on 3D triangles
+   (repeating 8×8 tiles on large polys).
 3. **Horizontally flipped sprites** (upstream issue
    [#9](https://github.com/pcercuei/bloom/issues/9)).
    **Done in this branch:** 1:1 mirrored sprites get a sub-texel UV inset so
@@ -115,17 +111,16 @@ Smaller, still user-visible:
 - Keyboard as a PS1 controller / cheat device
 - VMU icon animation speed (TODO in `mcd.c`)
 - Multi-partition IDE/SD and exFAT
-- Case where `snd_mem_malloc` fails on AICA init (0 is not a reliable
-  failure sentinel because AICA offsets may start at zero)
+- Stream alloc failure already falls back to silent dfsound (`nullsnd`)
 - Automated build: a GitHub Action that cross-compiles against a pinned KOS
   image, even if it cannot run tests on hardware
 
 ## Suggested order of follow-up PRs
 
-1. Audio: dfsound-on-AICA MVP (voices + XA, no reverb)
-2. PVR: on-screen wrapping texture windows + hybrid-render audit
-3. Options persistence + in-game pause/savestate
-4. Performance pass guided by the VMU overlay and a fixed game set
+1. PVR: wrapping texture windows on 3D triangles + hybrid-render audit
+2. Options persistence + in-game pause/savestate
+3. Performance pass guided by the VMU overlay and a fixed game set
+4. Audio: reverb/interpolation once the SH-4 mix is in budget
 
 Do not wait on a full rewrite of either GPU path. Unai stays the accuracy
 backstop; PVR stays the speed path; audio should not be blocked on either.
@@ -138,8 +133,9 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Failed disc/image loads show an on-screen error instead of doing nothing
 - Options screen shows compile-time flags and the controller map
 - README documents audio, renderer limits, controls, and CMake knobs
-- Off-screen triangles/sprites rasterize into VRAM (BIOS, F1 2001)
-- GP0(E2) texture windows applied per-pixel off-screen and at vertices on PVR
-  when the primitive does not wrap
+- Off-screen triangles/sprites/**lines** rasterize into VRAM (BIOS, F1 2001)
+- GP0(E2) texture windows applied per-pixel off-screen, origin-relative at
+  PVR vertices when the UV range does not wrap, and by tiling on-screen sprites
 - 1:1 mirrored sprites get a sub-texel UV inset (Hercules/Rayman garbage column)
 - Savestate replay restores the GPU draw area for the off-screen path
+- Default AICA plugin streams dfsound's mix (voices, XA, CDDA, SPU IRQs)

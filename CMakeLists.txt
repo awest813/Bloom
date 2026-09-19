@@ -262,7 +262,19 @@ if (SPU_PLUGIN STREQUAL Null)
 		${PCSX_REAL_DIR}/plugins/dfsound/nullsnd.c
 	)
 elseif(SPU_PLUGIN STREQUAL AICA)
-	add_library(spu STATIC src/aica.c)
+	# dfsound mix (voices, XA, CDDA, IRQs) with AICA streaming output.
+	# nullsnd stays as a silent fallback if the stream cannot start.
+	add_library(spu STATIC
+		${PCSX_REAL_DIR}/plugins/dfsound/dma.c
+		${PCSX_REAL_DIR}/plugins/dfsound/freeze.c
+		${PCSX_REAL_DIR}/plugins/dfsound/registers.c
+		${PCSX_REAL_DIR}/plugins/dfsound/spu.c
+		${PCSX_REAL_DIR}/plugins/dfsound/out.c
+		${PCSX_REAL_DIR}/plugins/dfsound/nullsnd.c
+		src/aica_out.c
+	)
+	target_compile_definitions(spu PRIVATE HAVE_AICA)
+	target_include_directories(spu PRIVATE ${PCSX_REAL_DIR}/plugins/dfsound)
 endif()
 
 add_executable(bloom

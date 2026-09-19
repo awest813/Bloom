@@ -455,7 +455,7 @@ void MyMenu::populateOptions()
 				       : " (slower, higher compatibility)"));
 	add_info(std::string("SPU: ") + SPU_PLUGIN +
 		 (std::string(SPU_PLUGIN) == "AICA"
-		  ? " (registers only, no audio yet)"
+		  ? " (dfsound mix, AICA output)"
 		  : " (silent, SPU IRQs emulated)"));
 	add_info(std::string("Resolution: ") + (WITH_480P ? "640x480" : "320x240"));
 	add_info(std::string("Hybrid rendering: ") + (WITH_HYBRID_RENDERING ? "on" : "off"));
