@@ -47,21 +47,24 @@ Features
 - Analog controllers, mouse, rumble, and button combos for missing PS1
   buttons (see Controls)
 
+- Game audio via dfsound mixed on the SH-4 and streamed to the AICA
+  (voices, XA, CDDA; reverb off)
+
 - Optional savestate load at boot (`WITH_BOOT_SSTATE`)
 
 Known limitations
 -----------------
 
-- **No game audio yet.** The default AICA SPU plugin only implements register
-  and DMA access so games do not hang on SPU probes. There is no ADPCM, XA,
-  CDDA, ADSR, or reverb output. `SPU_PLUGIN=Null` uses pcsx_rearmed dfsound
-  with a silent backend and does emulate SPU IRQs (needed by some games such
-  as Metal Gear Solid).
+- **Default AICA audio is dfsound mixed on the SH-4**, streamed to the
+  AICA as stereo S16 44100. Voices, XA, and CDDA play; SPU IRQs are
+  emulated. Reverb and Gaussian interpolation are off to save CPU.
+  `SPU_PLUGIN=Null` keeps the same mixer with a silent backend (useful
+  if a title still misbehaves with output enabled).
 
-- The PVR renderer still has holes (wrapping texture windows on-screen,
-  hybrid-render glitches). It now software-rasterizes **off-screen** draws
-  into VRAM (BIOS boot logo, F1 2001 car textures), applies non-wrapping
-  texture windows, and insets UVs on 1:1 mirrored sprites. Use Unai when a
+- The PVR renderer still has holes (wrapping texture windows on 3D
+  triangles, hybrid-render glitches). Off-screen triangles, sprites, and
+  **lines** now rasterize into VRAM. On-screen **sprites** that wrap a
+  texture window are split into window-sized tiles. Use Unai when a
   title still needs accurate drawing.
 
 - The in-menu **Options** screen is currently read-only. Renderer, resolution,
@@ -121,7 +124,7 @@ To configure Bloom you can use `kos-ccmake` instead, which will open a
 Useful CMake options:
 
 - `GPU_PLUGIN` — `PVR` (default) or `Unai`
-- `SPU_PLUGIN` — `AICA` (default, silent) or `Null` (silent, SPU IRQs)
+- `SPU_PLUGIN` — `AICA` (default: dfsound mix + AICA stream) or `Null` (silent, SPU IRQs)
 - `WITH_480P`, `WITH_HYBRID_RENDERING`, `WITH_CHD`, `WITH_IDE`, `WITH_SDCARD`
 
 Building a 1ST_READ.BIN
