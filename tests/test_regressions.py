@@ -286,6 +286,50 @@ int main(void) {
 }
 ''', extra_sources=[ROOT / "src/menu_util.c"])
 
+    def test_input_combos_sticks_and_multitap(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+#include "input_util.h"
+
+int main(void) {
+    uint8_t start_mask = 0, old_start = 0, combo = 0;
+    uint8_t lx, ly, rx, ry;
+
+    assert(bloom_analog_scale(128) == 128);
+    assert(bloom_analog_scale(0) == 0);
+    assert(bloom_analog_scale(255) == 255);
+    assert(bloom_clamp8(-4) == 0 && bloom_clamp8(300) == 255);
+
+    /* Tap START: two frames of Start, then idle. */
+    assert(bloom_start_buttons(1, 0, &start_mask, &old_start, &combo, 3) == 0);
+    assert(start_mask == 1 && combo == 0);
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == (1u << 3));
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == (1u << 3));
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == 0);
+
+    start_mask = old_start = combo = 0;
+    bloom_start_buttons(1, 0, &start_mask, &old_start, &combo, 3);
+    assert(bloom_button_combo(0, 1, 8, 10, &combo) == (1u << 8));
+    assert(combo == 1);
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == 0);
+
+    bloom_map_analog_combo(1, 10, 200, 128, 128, &combo, 1, &lx, &ly, &rx, &ry);
+    assert(lx == 128 && ly == 128 && rx == 10 && ry == 200);
+    assert(combo & (1u << 1));
+    bloom_map_analog_combo(0, 40, 50, 60, 70, &combo, 1, &lx, &ly, &rx, &ry);
+    assert(lx == 40 && ly == 50 && rx == 60 && ry == 70);
+
+    assert(bloom_pad_wants_multitap(0, 1));
+    assert(!bloom_pad_wants_multitap(1, 1));
+    assert(!bloom_pad_wants_multitap(0, 0));
+    assert(bloom_rumble_should_run(1, 0, 40));
+    assert(!bloom_rumble_should_run(1, 0, 0));
+    assert(!bloom_rumble_should_run(0, 7, 9));
+    assert(!bloom_button_combo(8, 1, 1, 2, &combo));
+    return 0;
+}
+''', extra_sources=[ROOT / "src/input_util.c"])
+
     def test_settings_parse_cycle_and_paths(self):
         self.compile_and_run(r'''
 #include <assert.h>

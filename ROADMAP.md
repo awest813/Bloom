@@ -178,6 +178,9 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Plugin open failures name CD-ROM vs audio vs GPU and close what opened
 - Hybrid PVR overflow now closes PT and flushes TR instead of mixing lists;
   bilinear filtering follows Settings rather than the compile-time flag
+- Controls: START combos and analog scaling are tested on the host; START+stick
+  centers the left analog; C/D pads enable a player-1 multitap; rumble stops
+  when disabled
 - Host regression checks cover audio buffering and VMU loading/metadata;
   sanitizer suites pass in Docker, including PVR display blanking, hybrid
   enqueue policy, texture-cache update boundaries, menu path/error helpers,

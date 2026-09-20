@@ -94,9 +94,11 @@ Dreamcast controller mapped as a DualShock-style pad. Hold **START** with anothe
 | START + A | Select |
 | START + X / B | L3 / R3 |
 | START + L / R | L2 / R2 |
-| START + analog stick | Right analog stick |
+| START + analog stick | Right analog (left stick is centered) |
 | START + A+B+X+Y | Quit emulator |
 | START + D-pad Up | Screenshot to `/pc` (dc-load only) |
+
+Four controllers on ports A–D are presented as a multitap on PlayStation port 1. Rumble follows the Settings toggle and stops when that option is off.
 
 ## Building
 

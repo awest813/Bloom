@@ -294,6 +294,7 @@ add_executable(bloom
 	src/emu.c
 	src/genmenu.cpp
 	src/input.c
+	src/input_util.c
 	src/mcd.c
 	src/menu_util.c
 	src/mmap.c
