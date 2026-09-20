@@ -51,6 +51,7 @@ docker exec bloom-gcc15 bash -lc '
   set -e
   kos-cmake -S /workspace -B /tmp/bloom-game \
     -DWITH_GAME_PATH=/cd/streetfighteralpha3.chd \
+    -DWITH_EMBEDDED_BIOS_PATH= \
     -DCMAKE_C_FLAGS= -DCMAKE_CXX_FLAGS=
   cmake --build /tmp/bloom-game -j4
   sh-elf-objcopy -O binary /tmp/bloom-game/bloom.elf /tmp/bloom-game/bloom.bin

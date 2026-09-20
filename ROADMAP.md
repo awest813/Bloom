@@ -193,7 +193,10 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;
   PVR with built-in BIOS emulation now reaches the animated intro. Title-screen,
   gameplay/audio, and physical Dreamcast validation remain open
-- README documents audio, renderer limits, controls, and CMake knobs
+- CMake fails on unknown GPU/SPU plugins, missing KOS toolchain variables, and
+  a BIOS pack path that does not exist; embedding re-runs when the ELF or BIOS
+  changes. `openbios.bin` is not in-tree; builds without it skip packing.
+  Dreamcast CI compiles Bloom in the public toolchain image (no packed BIOS)
 - Off-screen triangles/sprites/**lines** rasterize into VRAM (BIOS, F1 2001)
 - GP0(E2) texture windows applied per-pixel off-screen, origin-relative at
   PVR vertices when the UV range does not wrap, by tiling on-screen sprites,

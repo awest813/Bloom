@@ -37,8 +37,11 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 
 **BIOS and cards**
 
-- [OpenBIOS](https://pcsx-redux.consoledev.net/openbios/) is packed in by default
-- Official BIOS dumps can be used at runtime (`WITH_BIOS_PATH`) or embedded at build time
+- [OpenBIOS](https://pcsx-redux.consoledev.net/openbios/) can be packed into the
+  ELF when `openbios/openbios.bin` is present
+- Official BIOS dumps can be used at runtime (`WITH_BIOS_PATH`) or packed at
+  build time (`WITH_EMBEDDED_BIOS_PATH`, default `openbios/openbios.bin` when
+  that file is present)
 - Memory cards as VMU files, or as images on IDE / SD
 
 **Graphics**
@@ -108,6 +111,13 @@ Lightrec's atomics and disables FMA contraction for the menu background.
 Enabling `-mlra` globally with GCC 15.1 causes compiler failures in the
 graphics code. Uploading with dc-tool also needs current dc-tool and dc-load.
 
+Configure with `kos-cmake` after sourcing KallistiOS `environ.sh`. CMake
+refuses unknown `GPU_PLUGIN` / `SPU_PLUGIN` values, missing toolchain
+variables, and a `WITH_EMBEDDED_BIOS_PATH` that does not exist. Packing a
+BIOS is optional: drop `openbios.bin` in `openbios/` or pass a path; pass
+`-DWITH_EMBEDDED_BIOS_PATH=` to skip. `insert_bios.sh` re-runs when the ELF
+or BIOS file changes.
+
 See [the Docker toolchain notes](docs/docker-dreamcast.md) for the installed
 development environment and reproducible build commands.
 
@@ -136,10 +146,14 @@ That builds the defaults: PVR GPU, AICA audio, 480p, hybrid rendering, CHD, IDE,
 | `WITH_FSAA` | OFF | Horizontal anti-aliasing |
 | `WITH_24BPP` | OFF | 24-bit framebuffer, no dithering |
 | `WITH_CLIPPING` | ON | Pixel clipping |
+| `WITH_EMBEDDED_BIOS_PATH` | `openbios/openbios.bin` if present | Pack this BIOS into the ELF; empty skips |
 | `WITH_BOOT_SSTATE` | empty | Path to a savestate loaded at boot |
 | `WITH_BIOS_PATH` | empty | Runtime BIOS file |
 | `WITH_GAME_PATH` | empty | Auto-boot this disc image |
 | `WITH_MCD1_PATH` / `WITH_MCD2_PATH` | `/dev/mcd0`, `/dev/mcd1` | Memory card images |
+| `LOG_LEVEL` | Info | Lightrec log; `Debug` also links Binutils disassembly |
+| `WITH_GDB` | OFF | KallistiOS GDB stub |
+| `WITH_FASTMEM` | OFF | Replace memcpy/memset with kos-ports fastmem |
 
 ## Building a `1ST_READ.BIN`
 
