@@ -74,7 +74,7 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
   compile-time. Options compiled out of a build show as “this build” and
   cannot be toggled. Build info remains a read-only summary.
 - **3D is often far from full speed** (community reports around 30 fps 2D / 10 fps 3D).
-- **Audio has no reverb** yet. If the AICA stream fails to start, dfsound falls back to silent output; IRQs still fire.
+- **Audio has no reverb** yet. If the AICA stream fails to start, dfsound falls back to silent output; IRQs still fire. When the mix outruns the ring, the oldest samples are dropped so playback stays with the current frame.
 - Light gun and keyboard-as-controller are stubs.
 
 ## Controls

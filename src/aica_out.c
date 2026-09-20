@@ -81,12 +81,27 @@ static void ring_read(int16_t *dst, int n)
 	}
 }
 
+static void ring_drop(int n)
+{
+	int have = ring_count();
+
+	if (n < 0)
+		n = 0;
+	n &= ~1;
+	if (n > have)
+		n = have & ~1;
+	ring_r = (ring_r + n) & (RING_SAMPLES - 1);
+}
+
 /* KOS documents smp_req as "samples" but snd_stream_fill passes bytes. */
 static void *aica_callback(snd_stream_hnd_t hnd, int needed_bytes, int *got_bytes)
 {
 	int want, have;
 
 	(void)hnd;
+
+	if (!got_bytes)
+		return bounce;
 
 	want = needed_bytes / 2;
 	if (want > BOUNCE_SAMPLES)
@@ -177,7 +192,7 @@ static int aica_busy(void)
 static void aica_feed(void *data, int bytes)
 {
 	const int16_t *src = data;
-	int samples, space;
+	int samples, space, cap = RING_SAMPLES - 2;
 
 	if (stream_hnd == SND_STREAM_INVALID)
 		return;
@@ -186,9 +201,18 @@ static void aica_feed(void *data, int bytes)
 		goto poll;
 
 	samples = (bytes / 2) & ~1;
-	/* Let playback consume queued audio before discarding an overflow. */
+	/* Keep the newest samples when a mix is larger than the ring. */
+	if (samples > cap) {
+		src += samples - cap;
+		samples = cap;
+	}
+	/* Let playback consume queued audio, then drop the oldest leftover
+	 * so a slow frame does not make the mix lag further behind. */
 	if (samples > ring_space() && stream_started)
 		snd_stream_poll(stream_hnd);
+	space = ring_space();
+	if (samples > space)
+		ring_drop(samples - space);
 	space = ring_space();
 	if (samples > space)
 		samples = space;

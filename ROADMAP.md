@@ -29,9 +29,9 @@ dfsound falls back to the silent `nullsnd` driver (IRQs still fire).
 correctness baseline.
 
 The AICA driver now prebuffers one complete hardware buffer before playback,
-reclaims partial initialization on failure, and drains pending audio before
-discarding overflow. Its ring, callback buffer, and KOS scratch buffer total
-48 KiB of SH-4 RAM (previously 96 KiB). Full-driver host tests cover startup,
+reclaims partial initialization on failure, and drops the oldest samples when
+the mix outruns the ring so slow frames do not add latency. Its ring, callback
+buffer, and KOS scratch buffer total 48 KiB of SH-4 RAM (previously 96 KiB). Full-driver host tests cover startup,
 shutdown/reopening, silent fallback, and sample order. A standalone test of
 the production driver completed two stereo-tone passes in Flycast 2.7,
 including shutdown and reopening; the listener confirmed both sounded clear.
@@ -165,8 +165,8 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Build info screen shows compile-time flags and the controller map
 - Menu recovery for unreadable folders and credits; bounded navigation and
   consistent credit line spacing
-- Audio buffering preserves stereo pairs on overflow and fills underruns
-  with silence
+- Audio buffering preserves stereo pairs on overflow, drops the oldest mix when
+  the ring is full, and fills underruns with silence
 - VMU loading rejects unsupported ports and incomplete files; metadata title
   lengths, save-block indices, and icon counts are bounded
 - Menu chrome: title, location, hints, smear shadows, left-aligned
