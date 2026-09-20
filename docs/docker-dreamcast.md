@@ -105,7 +105,7 @@ verified.
 
 The source-based PVR regression test also exposed undefined signed shifts in
 coordinate decoding. Coordinates now use explicit 11-bit sign extension;
-all five host suites pass with nonrecovering address/undefined sanitizers.
+the host sanitizer suites pass with nonrecovering address/undefined sanitizers.
 
 ### Texture-cache update boundaries
 

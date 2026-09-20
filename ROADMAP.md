@@ -184,10 +184,11 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Build info lists live Settings plus compile-time GPU/SPU/24-bit; a failed
   plugin open after launch returns to the menu with that error; a missing
   saved folder is repaired before the browser opens
-- Host regression checks cover audio buffering and VMU loading/metadata;
-  sanitizer suites pass in Docker, including PVR display blanking, hybrid
-  enqueue policy, texture-cache update boundaries, menu path/error helpers,
-  and settings
+- Host regression checks pick a sanitizer-capable compiler (gcc when Clang
+  lacks libclang-rt), extract production functions with C-aware brace
+  matching, fail on compiler errors/warnings, and run in GitHub Actions.
+  Suites cover PVR blanking, hybrid enqueue, texture-cache edges, menu
+  helpers, input, settings, and audio
 - Full Dreamcast build passes with GCC 15.1 and current KOS; compiler
   workarounds and the installed SDK are documented in `docs/docker-dreamcast.md`
 - Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;

@@ -1,0 +1,15 @@
+name: host-tests
+
+on: [push, pull_request]
+
+jobs:
+  sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc python3
+      - name: Run sanitizer regressions
+        run: python3 tests/test_regressions.py -v
