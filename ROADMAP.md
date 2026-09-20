@@ -195,6 +195,8 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
   PVR with built-in BIOS emulation now reaches the animated intro. Title-screen,
   gameplay/audio, and physical Dreamcast validation remain open
 - README documents audio, renderer limits, controls, and CMake knobs
+- Default `openbios.bin` is the MIT OpenBIOS image from Libreboot 20241206,
+  checksummed in-tree so CMake can pack a BIOS without a retail dump
 - Off-screen triangles/sprites/**lines** rasterize into VRAM (BIOS, F1 2001)
 - GP0(E2) texture windows applied per-pixel off-screen, origin-relative at
   PVR vertices when the UV range does not wrap, by tiling on-screen sprites,
