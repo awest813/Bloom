@@ -467,9 +467,6 @@ void pvr_renderer_init(void)
 	pvr.win_mask_x = 255;
 	pvr.win_mask_y = 255;
 
-	poly_textured.m2.filter_mode = PVR_OPT_BILINEAR()
-		? PVR_FILTER_BILINEAR : PVR_FILTER_NONE;
-
 	if (!WITH_24BPP) {
 		pvr.fake_tex = pvr_mem_malloc(sizeof(fake_tex_data));
 		pvr_txr_load(fake_tex_data, pvr.fake_tex,
@@ -2043,6 +2040,9 @@ static void pvr_set_list(pvr_list_t list)
 	pvr.old_blending_is_none = false;
 
 	pvr_list_begin(list);
+
+	poly_textured.m2.filter_mode = PVR_OPT_BILINEAR()
+		? PVR_FILTER_BILINEAR : PVR_FILTER_NONE;
 
 	if (PVR_OPT_HYBRID()) {
 		poly_textured.m0.list_type = list;
