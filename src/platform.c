@@ -197,8 +197,18 @@ static void dc_vout_flip(const void *vram, int offset, int bgr24,
 	pvr_vertex_t vert;
 	int copy_w;
 
-	if (!started || !vram)
+	if (!started)
 		return;
+
+	if (!vram) {
+		/* gpulib uses NULL for display disable. Close the pending scene
+		 * and show black instead of leaving its queues open indefinitely. */
+		if (HARDWARE_ACCELERATED && !frame_was_24bpp) {
+			hw_render_stop();
+			hw_render_start();
+		}
+		return;
+	}
 
 	if (HARDWARE_ACCELERATED && !frame_was_24bpp) {
 		/* Render the old frame */

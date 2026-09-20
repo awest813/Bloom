@@ -185,14 +185,17 @@ static void mcd_convert_icon(unsigned char *dest, const unsigned char *src)
 
 static const char jis_b2_chars[] = " ,.,. :;?!";
 
-void shift_jis_to_ascii(char *dest, const char *src)
+static void shift_jis_to_ascii(char *dest, size_t dest_size, const char *src)
 {
 	unsigned int i;
 	uint8_t b1, b2;
+	size_t used = 0;
+	if (!dest_size)
+		return;
 
-	for (i = 0; i < 64; i += 2) {
+	for (i = 0; i < 64 && used + 1 < dest_size; i += 2, used++) {
 		b1 = (uint8_t)src[i];
-		b2 = (uint8_t)src[i + 1];
+		b2 = i + 1 < 64 ? (uint8_t)src[i + 1] : 0;
 
 		switch (b1) {
 		case 0x00:
@@ -238,6 +241,7 @@ void shift_jis_to_ascii(char *dest, const char *src)
 		       b1, b2);
 		*dest++ = ' ';
 	}
+	*dest = '\0';
 }
 
 static void mcd_set_header(file_t fd, const char *data)
@@ -259,6 +263,10 @@ static void mcd_set_header(file_t fd, const char *data)
 	}
 
 	block = mcd_get_file(data);
+	if (block < 0) {
+		printf("No file in PSX memcard\n");
+		return;
+	}
 	ptr = data + 0x2000 * block;
 
 	if (ptr[0] != 'S' || ptr[1] != 'C') {
@@ -267,9 +275,13 @@ static void mcd_set_header(file_t fd, const char *data)
 	}
 
 	/* Load the title as the savefile's description */
-	shift_jis_to_ascii(pkg.desc_long, ptr + 4);
+	shift_jis_to_ascii(pkg.desc_long, sizeof(pkg.desc_long), ptr + 4);
 
-	pkg.icon_cnt = ptr[2] - 0x10;
+	if ((uint8_t)ptr[2] < 0x11 || (uint8_t)ptr[2] > 0x13) {
+		printf("Unexpected PSX icon count\n");
+		return;
+	}
+	pkg.icon_cnt = (uint8_t)ptr[2] - 0x10;
 
 	/* Copy the palette */
 	for (i = 0; i < 16; i++) {
@@ -349,15 +361,20 @@ static void mcd_fs_hotplug_vmu(void *d)
 	};
 	char buf[20];
 	void *hnd;
+	int bytes;
+
+	/* Startup enumeration includes VMUs outside the two emulated slots. */
+	if (dev->port >= 2 || dev->unit != 1)
+		return;
 
 	if (strncmp(configs[dev->port], "/dev/mcd", sizeof("/dev/mcd") - 1)) {
 		/* Memcard for this slot not configured for VMU, skip */
 		return;
 	}
+	McdDisable[dev->port] = 1;
 
 	if (!dev->valid) {
 		printf("Unplugged a VMU in port %u\n", dev->port);
-		McdDisable[dev->port] = 1;
 		return;
 	}
 
@@ -374,13 +391,18 @@ static void mcd_fs_hotplug_vmu(void *d)
 		printf("Loading memcard from %s\n", buf);
 	}
 
-	gzread(hnd, dev->port ? Mcd2Data : Mcd1Data, MCD_SIZE);
+	if (!hnd) {
+		printf("Unable to load fallback memcard\n");
+		return;
+	}
+
+	bytes = gzread(hnd, dev->port ? Mcd2Data : Mcd1Data, MCD_SIZE);
 	gzclose(hnd);
 
-	if (mcd_valid(dev->port ? Mcd2Data : Mcd1Data))
+	if (bytes == MCD_SIZE && mcd_valid(dev->port ? Mcd2Data : Mcd1Data))
 		McdDisable[dev->port] = 0;
 	else
-		printf("Unexpected MCD header in VMU file\n");
+		printf("Invalid or incomplete memcard in VMU file\n");
 }
 
 static void mcd_hotplug_vmu_cb(maple_device_t *dev, void *)

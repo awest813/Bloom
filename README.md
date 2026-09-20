@@ -25,7 +25,7 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 | Audio | dfsound mix streamed to the AICA (voices, XA, CDDA; reverb off) |
 | Input | DualShock-style pad, analog, mouse, rumble |
 | Saves | VMU memory cards; optional savestate load at boot |
-| UX | File browser and credits; Options is read-only; no in-game pause |
+| UX | File browser, credits, and read-only Build info; no in-game pause |
 
 ## Features
 
@@ -55,6 +55,8 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 - Voices, XA-ADPCM, CDDA, and SPU IRQs
 - Reverb and Gaussian interpolation are off to save CPU
 - `SPU_PLUGIN=Null`: same mixer, silent output (useful if a title misbehaves with playback)
+- AICA playback waits for about 93 ms of mixed audio before starting, then
+  fills shortages with silence. Sustained slow emulation can still cause gaps.
 
 **Input and extras**
 
@@ -65,7 +67,7 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 ## Known limitations
 
 - **PVR still glitches** on some effects (hybrid rendering, remaining GPU holes). Use Unai when a title needs accurate drawing.
-- **No in-game pause**, disc-swap UI, or savestate UI. Options in the menu are compile-time flags, not live toggles.
+- **No in-game pause**, disc-swap UI, or savestate UI. Build info shows compile-time flags and controls, not live toggles.
 - **3D is often far from full speed** (community reports around 30 fps 2D / 10 fps 3D).
 - **Audio has no reverb** yet. If the AICA stream fails to start, dfsound falls back to silent output; IRQs still fire.
 - Light gun and keyboard-as-controller are stubs.
@@ -93,9 +95,14 @@ Dreamcast controller mapped as a DualShock-style pad. Hold **START** with anothe
 
 ## Building
 
-You need the latest KallistiOS `master` branch, and preferably a dc-chain
-toolchain built with the `gcc-15.0.0-lra` profile. Uploading with dc-tool
-also needs current dc-tool and dc-load.
+You need current KallistiOS and a matching Dreamcast toolchain. GCC 15.1
+builds with the default register allocator; CMake enables LRA only for
+Lightrec's atomics and disables FMA contraction for the menu background.
+Enabling `-mlra` globally with GCC 15.1 causes compiler failures in the
+graphics code. Uploading with dc-tool also needs current dc-tool and dc-load.
+
+See [the Docker toolchain notes](docs/docker-dreamcast.md) for the installed
+development environment and reproducible build commands.
 
 Required kos-ports: **Parallax** and **Tsunami** (menu).
 
@@ -152,6 +159,59 @@ mkdir build && cd build
 kos-cmake -DCMAKE_BUILD_TYPE=Debug -DLOG_LEVEL=Debug ..
 make
 ```
+
+## Host regression checks
+
+With Python 3 and Clang installed, run:
+
+```sh
+python3 tests/test_regressions.py
+```
+
+Or run the same checks in Docker from the repository root:
+
+```sh
+docker build -f tests/Dockerfile -t bloom-tests .
+docker run --rm -v "$PWD:/workspace:ro" bloom-tests
+```
+
+These checks compile the complete production audio driver and dfsound output
+selection, plus the VMU metadata/loading routines, with hardware calls stubbed
+out and address/undefined-behavior sanitizers enabled. They cover audio startup,
+failure cleanup, silent fallback, reopening, stereo ordering across overflow
+and wrapping, silent underruns, bounded save titles, invalid icon counts, unsupported VMU
+ports, missing files, and truncated saves. They do not replace a KallistiOS
+build or testing on Dreamcast hardware.
+
+PVR regression coverage also checks that disabled scanout continues drawing
+sprites and lines into PSX VRAM without accumulating hardware polygons,
+preserves drawing-area clipping, and resumes hardware rendering when enabled.
+Texture-cache tests cover every single-pixel VRAM update and rectangles ending
+at or crossing cache-block boundaries.
+Sanitizer errors fail the test run.
+
+### Flycast audio smoke test
+
+`tests/audio_smoke.c` runs the production AICA output driver without the
+PlayStation core or a game image. With a KallistiOS environment loaded, build
+it from the repository root:
+
+```sh
+mkdir -p build
+kos-cc -std=gnu11 -Wall -Wextra -Werror \
+  -Ideps/pcsx_rearmed/plugins/dfsound \
+  tests/audio_smoke.c src/aica_out.c -lm -o build/bloom-audio-smoke.elf
+```
+
+Open the ELF in Flycast. It plays three seconds of 440 Hz on the left and
+660 Hz on the right, closes the driver, pauses, and repeats. Completion is
+shown on screen; close the emulator when finished. Check both channels for
+clear tones and listen for glitches, especially when playback restarts.
+
+Both passes completed in Flycast 2.7 during development, and the listener
+confirmed both rounds sounded clear. This checks initialization, stereo-tone
+playback, shutdown, and reopening with the emulated AICA. Real Dreamcast
+behavior and PlayStation mixer integration still require separate verification.
 
 ## Credits
 

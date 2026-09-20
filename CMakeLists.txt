@@ -114,6 +114,15 @@ set(LIBLIGHTNING_INCLUDE_DIR $<TARGET_PROPERTY:lightning,INTERFACE_INCLUDE_DIREC
 # Include Lightrec's own CMake file
 add_subdirectory(${LIGHTREC_REAL_DIR} ${CMAKE_BINARY_DIR}/lightrec)
 
+# GCC 15's legacy SH register allocator cannot compile Lightrec's byte-sized
+# atomics. Limit LRA to this target: Bloom's fixed-register graphics assembly
+# does not compile with GCC 15.1's experimental LRA implementation.
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND
+    CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 15 AND
+    CMAKE_C_COMPILER_VERSION VERSION_LESS 16)
+	target_compile_options(lightrec PRIVATE -mlra)
+endif()
+
 set(CODE_BUFFER_SIZE_MB 3 CACHE STRING "Code buffer size in MiB")
 math(EXPR CODEBUF_SIZE "0x100000 * ${CODE_BUFFER_SIZE_MB}")
 if (NOT CODEBUF_SIZE)
@@ -290,6 +299,11 @@ add_executable(bloom
 	src/platform.c
 	src/plugins.c
 )
+# GCC can fail register allocation when contracting background arithmetic
+# into FMA instructions alongside its fixed SH-4 floating-point registers.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+	set_source_files_properties(src/background.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+endif()
 target_link_libraries(bloom PUBLIC libpcsxcore gpu spu tsunami
 	#lightning lightrec libpcsxcore gpu spu
 	#${ZLIB_LIBRARIES} tsunami parallax

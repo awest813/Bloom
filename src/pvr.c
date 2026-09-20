@@ -868,8 +868,8 @@ static void maybe_update_texture(struct texture_page *page,
 		update_texture(page, texpage_id, to_load);
 }
 
-static uint64_t
-get_block_mask(uint16_t umin, uint16_t umax, uint16_t vmin, uint16_t vmax)
+static uint64_t get_block_mask(uint16_t umin, uint16_t umax,
+                               uint16_t vmin, uint16_t vmax)
 {
 	uint64_t mask = 0, mask_horiz = 0;
 	uint16_t u, v;
@@ -971,6 +971,19 @@ static bool overlap_draw_area(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1
 		&& y1 > pvr.start_y;
 }
 
+/* The update is already split at 64x256 page boundaries. Keep its exclusive
+ * right/bottom edges exclusive when converting to page-local coordinates. */
+static uint64_t vram_update_block_mask(uint16_t xmin, uint16_t xmax,
+				       uint16_t ymin, uint16_t ymax)
+{
+	if (xmin >= xmax || ymin >= ymax)
+		return 0;
+
+	return get_block_mask((xmin % 64) << 2,
+			      (((xmax - 1) % 64) + 1) << 2,
+			      ymin % 256, ((ymax - 1) % 256) + 1);
+}
+
 static void invalidate_texture_area(unsigned int page_offset,
 				    uint16_t xmin, uint16_t xmax,
 				    uint16_t ymin, uint16_t ymax,
@@ -985,7 +998,7 @@ static void invalidate_texture_area(unsigned int page_offset,
 	umax = (xmax - 1) % 64;
 	vmax = (ymax - 1) % 256;
 
-	block_mask = get_block_mask(umin << 2, umax << 2, vmin, vmax);
+	block_mask = vram_update_block_mask(xmin, xmax, ymin, ymax);
 	invalidate_textures(page_offset, block_mask);
 
 	if (invalidate_only || !overlap_draw_area(xmin, ymin, xmax, ymax))
@@ -2630,6 +2643,14 @@ static void process_poly_inner(struct poly *poly, bool scissor, int texwin_budge
 
 static void process_poly(struct poly *poly, bool scissor)
 {
+	/* Display disable only hides scanout; PSX VRAM writes must continue.
+	 * Blanked primitives are rasterized by sw_draw()/sw_draw_lines().
+	 * Upload/fill helpers also reach here after updating their VRAM backing.
+	 * Do not open a PVR scene: gpulib does not flip while display is off. */
+	if (gpu.status & PSX_GPU_STATUS_BLANKING) {
+		poly_discard(poly);
+		return;
+	}
 	process_poly_inner(poly, scissor, TEXWIN_SPLIT_MAX);
 }
 
@@ -2810,6 +2831,12 @@ static struct {
 	int dx, dy;
 } sw = { .x2 = 1024, .y2 = 512 };
 
+/* Decode signed 11-bit PSX coordinates without overflowing a signed shift. */
+static inline int psx_coord(uint32_t word)
+{
+	return (int)(word & 0x3ff) - (int)(word & 0x400);
+}
+
 static void sw_sync_ecmds(const uint32_t *ecmds)
 {
 	texwin_set(ecmds[2]);
@@ -2817,8 +2844,8 @@ static void sw_sync_ecmds(const uint32_t *ecmds)
 	sw.y1 = (ecmds[3] >> 10) & 0x1ff;
 	sw.x2 = (ecmds[4] & 0x3ff) + 1;
 	sw.y2 = ((ecmds[4] >> 10) & 0x1ff) + 1;
-	sw.dx = ((int32_t)ecmds[5] << 21) >> 21;
-	sw.dy = ((int32_t)ecmds[5] << 10) >> 21;
+	sw.dx = psx_coord(ecmds[5]);
+	sw.dy = psx_coord(ecmds[5] >> 11);
 
 	if (sw.x2 <= sw.x1)
 		sw.x2 = 1024;
@@ -2839,7 +2866,8 @@ static bool sw_bbox_offscreen(int *x0, int *y0, int *x1, int *y1)
 	*y1 = *y1 + 1 < sw.y2 ? *y1 + 1 : sw.y2;
 
 	return *x1 > *x0 && *y1 > *y0
-		&& !overlap_draw_area(*x0, *y0, *x1, *y1);
+		&& ((gpu.status & PSX_GPU_STATUS_BLANKING)
+		    || !overlap_draw_area(*x0, *y0, *x1, *y1));
 }
 
 static uint16_t sw_texel(unsigned int u, unsigned int v, uint16_t clut,
@@ -3050,8 +3078,8 @@ static bool sw_draw(const union PacketBuffer *pbuffer, uint32_t cmd)
 			if (textured && raw)
 				v[i].r = v[i].g = v[i].b = 0x80;
 
-			v[i].x = (((int32_t)*buf << 21) >> 21) + sw.dx;
-			v[i].y = (((int32_t)*buf << 5) >> 21) + sw.dy;
+			v[i].x = psx_coord(*buf) + sw.dx;
+			v[i].y = psx_coord(*buf >> 16) + sw.dy;
 			buf++;
 
 			if (textured) {
@@ -3091,8 +3119,8 @@ static bool sw_draw(const union PacketBuffer *pbuffer, uint32_t cmd)
 		if (textured && raw)
 			r = g = b = 0x80;
 
-		x = (((int32_t)*buf << 21) >> 21) + sw.dx;
-		y = (((int32_t)*buf << 5) >> 21) + sw.dy;
+		x = psx_coord(*buf) + sw.dx;
+		y = psx_coord(*buf >> 16) + sw.dy;
 		buf++;
 
 		if (textured) {
@@ -3180,8 +3208,8 @@ static bool sw_draw_lines(const union PacketBuffer *pbuffer, uint32_t cmd,
 	r0 = c & 0xff;
 	g0 = (c >> 8) & 0xff;
 	b0 = (c >> 16) & 0xff;
-	x0 = (((int32_t)*buf << 21) >> 21) + sw.dx;
-	y0 = (((int32_t)*buf << 5) >> 21) + sw.dy;
+	x0 = psx_coord(*buf) + sw.dx;
+	y0 = psx_coord(*buf >> 16) + sw.dy;
 	buf++;
 
 	if (len_polyline < 2)
@@ -3199,8 +3227,8 @@ static bool sw_draw_lines(const union PacketBuffer *pbuffer, uint32_t cmd,
 			b1 = b0;
 		}
 
-		x1 = (((int32_t)*buf << 21) >> 21) + sw.dx;
-		y1 = (((int32_t)*buf << 5) >> 21) + sw.dy;
+		x1 = psx_coord(*buf) + sw.dx;
+		y1 = psx_coord(*buf >> 16) + sw.dy;
 		buf++;
 
 		bx0 = x0 < x1 ? x0 : x1;
@@ -3290,7 +3318,9 @@ static void draw_textured_sprite(int16_t x, int16_t y, int w, int h,
 	}
 }
 
-__pvr
+/* Keep command dispatch separate from the drawing hot path: each KOS .subN
+ * section must fit within the SH-4's 8 KiB instruction cache. */
+__attribute__((section(".sub1")))
 static void process_gpu_commands(void)
 {
 	bool multicolor, multiple, semi_trans, textured, raw_tex;
@@ -3408,8 +3438,8 @@ static void process_gpu_commands(void)
 
 			case 0xe5:
 				/* Set drawing offsets */
-				pvr.draw_dx = ((int32_t)pbuffer->U4[0] << 21) >> 21;
-				pvr.draw_dy = ((int32_t)pbuffer->U4[0] << 10) >> 21;
+				pvr.draw_dx = psx_coord(pbuffer->U4[0]);
+				pvr.draw_dy = psx_coord(pbuffer->U4[0] >> 11);
 				sw.dx = pvr.draw_dx;
 				sw.dy = pvr.draw_dy;
 				pvr.draw_offt_x = pvr.draw_dx - pvr.start_x + gpu.screen.x;
@@ -3849,6 +3879,12 @@ static void pvr_render_outlines(void)
 	sq_hdr = pvr_dr_target();
 	copy32(sq_hdr, &op_black_header);
 	pvr_dr_commit(sq_hdr);
+
+	if (gpu.status & PSX_GPU_STATUS_BLANKING) {
+		pvr_render_black_square(0, gpu.screen.hres, 0, gpu.screen.vres, z);
+		pvr_list_finish();
+		return;
+	}
 
 	if (gpu.screen.x)
 		pvr_render_black_square(0, gpu.screen.x, 0, gpu.screen.vres, z);

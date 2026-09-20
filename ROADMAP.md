@@ -28,6 +28,16 @@ dfsound falls back to the silent `nullsnd` driver (IRQs still fire).
 `SPU_PLUGIN=Null` is the same mixer with no output, still useful as a
 correctness baseline.
 
+The AICA driver now prebuffers one complete hardware buffer before playback,
+reclaims partial initialization on failure, and drains pending audio before
+discarding overflow. Its ring, callback buffer, and KOS scratch buffer total
+48 KiB of SH-4 RAM (previously 96 KiB). Full-driver host tests cover startup,
+shutdown/reopening, silent fallback, and sample order. A standalone test of
+the production driver completed two stereo-tone passes in Flycast 2.7,
+including shutdown and reopening; the listener confirmed both sounded clear.
+PlayStation mixer integration and hardware playback, especially with sustained
+slow emulation, still need verification.
+
 Remaining:
 
 1. Turn reverb / interpolation back on once the mix is cheap enough.
@@ -36,6 +46,14 @@ Remaining:
 3. Confirm IRQ-sensitive titles (MGS) against Null vs. AICA on hardware.
 
 ## Priority 2 — PVR renderer correctness
+
+The display-disable overflow is fixed: while the PSX display is blanked,
+primitives update VRAM in software instead of accumulating an unpresented PVR
+scene. NULL-frame blanking requests now close the scene and render black.
+Street Fighter Alpha 3 progressed through the QSound screen and animated
+intro with PVR, built-in BIOS emulation, and Flycast's interpreter. Thin
+vertical seams remain visible; gameplay and physical hardware still need
+validation.
 
 The hardware renderer is the only path that can be fast on Dreamcast, but it
 is the main compatibility sink. Known holes, in the order they should be
@@ -77,7 +95,7 @@ branch.
 
 Almost every user-facing setting is compile-time only.
 
-1. Turn the Options screen into real toggles for renderer (PVR/Unai), 480p,
+1. Add an Options screen with real toggles for renderer (PVR/Unai), 480p,
    hybrid rendering, and SPU backend, persisted to `/sd` or `/ide` when
    present, otherwise VMU/VMU-incompatible `/ram`.
 2. In-game pause: START combo or a dedicated chord that does not eat PS1
@@ -134,7 +152,21 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - `emu_check_cd(NULL)` no longer calls `strstr` on a null path (Run CD-ROM)
 - File browser lists `.bin` / `.img` / `.mdf` and is case-insensitive
 - Failed disc/image loads show an on-screen error instead of doing nothing
-- Options screen shows compile-time flags and the controller map
+- Build info screen shows compile-time flags and the controller map
+- Menu recovery for unreadable folders and credits; bounded navigation and
+  consistent credit line spacing
+- Audio buffering preserves stereo pairs on overflow and fills underruns
+  with silence
+- VMU loading rejects unsupported ports and incomplete files; metadata title
+  lengths, save-block indices, and icon counts are bounded
+- Host regression checks cover audio buffering and VMU loading/metadata;
+  all five sanitizer suites pass in Docker, including PVR display blanking
+  and texture-cache update boundaries
+- Full Dreamcast build passes with GCC 15.1 and current KOS; compiler
+  workarounds and the installed SDK are documented in `docs/docker-dreamcast.md`
+- Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;
+  PVR with built-in BIOS emulation now reaches the animated intro. Title-screen,
+  gameplay/audio, and physical Dreamcast validation remain open
 - README documents audio, renderer limits, controls, and CMake knobs
 - Off-screen triangles/sprites/**lines** rasterize into VRAM (BIOS, F1 2001)
 - GP0(E2) texture windows applied per-pixel off-screen, origin-relative at

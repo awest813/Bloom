@@ -128,8 +128,14 @@ void PathLabel::activate()
 	bool back = name.compare("..") == 0;
 
 	fs::path path = back ? pwd.parent_path() : pwd / name;
+	std::error_code error;
+	bool is_file = fs::is_regular_file(path, error);
+	if (error) {
+		myMenu->showError("File unavailable. Press B to go back.");
+		return;
+	}
 
-	if (!back && fs::is_regular_file(path)) {
+	if (!back && is_file) {
 		const std::string& ext = path.extension();
 
 		if (ext.empty()) {
@@ -180,6 +186,8 @@ void InfoLabel::cancel()
 }
 
 MyMenu::MyMenu(std::shared_ptr<Font> fnt, const fs::path &path)
+	: m_path(path), m_cursel(0), m_font_size(MENU_ENTRY_SIZE),
+	  m_xoffset(MENU_OFF_X)
 {
 	m_bg = std::make_shared<Background>();
 
@@ -189,7 +197,7 @@ MyMenu::MyMenu(std::shared_ptr<Font> fnt, const fs::path &path)
 	m_scene->subAdd(m_bg);
 	m_scene->subAdd(m_top_scene);
 
-	m_top_scene->setTranslate(Vector(-m_xoffset, MENU_OFF_Y, 10));
+	m_top_scene->setTranslate(Vector(-static_cast<float>(m_xoffset), MENU_OFF_Y, 10));
 
 	m_color0 = Color(1, 1, 1, 1);
 	m_color1 = Color(1, 0.5f, 0.5f, 0.5f);
@@ -245,7 +253,7 @@ void MyMenu::populate_dft()
 		preparePopulate(fs::path(TOP_PATH), false, false);
 	}));
 
-	addEntry(std::make_shared<MainMenuLabel>(m_font, "Options", m_font_size,
+	addEntry(std::make_shared<MainMenuLabel>(m_font, "Build info", m_font_size,
 						 [&] {
 		prepareOptions();
 	}));
@@ -282,6 +290,7 @@ void MyMenu::populate(fs::path path, bool back)
 	bool is_file;
 	bool is_credits = path.compare("/rd/credits") == 0;
 	int fd;
+	bool open_failed = false;
 
 	m_font_size = ENTRY_SIZE;
 	m_xoffset = 200;
@@ -293,21 +302,26 @@ void MyMenu::populate(fs::path path, bool back)
 
 	fd = fs_open(path.c_str(), O_DIR);
 	if (fd == -1) {
+		open_failed = true;
 		fprintf(stderr, "Unable to open directory: %s\n", path.c_str());
 		if (!m_path.empty() && m_path != path)
 			fd = fs_open(m_path.c_str(), O_DIR);
 		if (fd == -1) {
-			showError("Unable to open directory");
 			populate_dft();
+			showError("Unable to open directory");
 			return;
 		}
 		path = m_path;
 	}
+	is_credits = path == "/rd/credits";
 
 	while ((d = fs_readdir(fd))) {
 		std::string name = d->name;
 		fs::path filepath = name;
-		is_file = fs::is_regular_file(path / filepath);
+		std::error_code error;
+		is_file = fs::is_regular_file(path / filepath, error);
+		if (error)
+			continue;
 
 		if (name == ".")
 			continue;
@@ -355,15 +369,19 @@ void MyMenu::populate(fs::path path, bool back)
 	m_cursel = 0;
 	m_input_allowed = true;
 	clearError();
-	if (m_entries.empty() && !is_credits)
-		showError("No disc images in this folder");
+	if (open_failed)
+		showError("Unable to open folder; returned to previous folder");
+	else if (m_entries.empty())
+		showError(is_credits ? "No credits found. Press B to go back."
+			  : "No disc images found. Press B to go back.");
 }
 
 void MyMenu::preparePopulate(fs::path path, bool back, bool dft)
 {
 	float dx = back ? 1.0f : -1.0f;
 
-	if (back || fs::is_directory(path) || path == fs::path(TOP_PATH)) {
+	std::error_code error;
+	if (back || fs::is_directory(path, error) || path == fs::path(TOP_PATH)) {
 		auto anim = std::make_shared<AnimFadeAway>(false, dx,
 							   800.0f * dx, [=, this] {
 			if (dft)
@@ -375,6 +393,8 @@ void MyMenu::preparePopulate(fs::path path, bool back, bool dft)
 		m_top_scene->animRemoveAll();
 		m_top_scene->animAdd(anim);
 		m_input_allowed = false;
+	} else {
+		showError("Folder unavailable. Press B to go back.");
 	}
 }
 
@@ -396,9 +416,13 @@ void MyMenu::populateCredits(fs::path path)
 	std::shared_ptr<AnimFadeIn> anim;
 	std::string line;
 
-	if (!fd.is_open())
+	if (!fd.is_open()) {
+		populate("/rd/credits", true);
+		showError("Unable to open credits. Press B to go back.");
 		return;
+	}
 
+	m_font_size = CREDITS_ENTRY_SIZE;
 	m_xoffset = 10;
 
 	m_entries.clear();
@@ -410,6 +434,9 @@ void MyMenu::populateCredits(fs::path path)
 		addEntry(std::make_shared<TextLabel>(m_font, line,
 						     CREDITS_ENTRY_SIZE));
 	}
+	if (m_entries.empty())
+		addEntry(std::make_shared<TextLabel>(m_font,
+			"Credits file is empty. Press B to go back.", m_font_size));
 
 	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
 		m_top_scene->animRemoveAll();
@@ -506,6 +533,8 @@ void MyMenu::clearError()
 
 void MyMenu::setEntry(unsigned int entry) {
 	int offset_y;
+	if (entry >= m_entries.size())
+		return;
 
 	m_entries[m_cursel]->deselect();
 	m_cursel = entry;
@@ -552,7 +581,7 @@ void MyMenu::inputEvent(const Event & evt) {
 		if (m_cursel + 1 < m_entries.size()) {
 			unsigned int entry;
 
-			if (m_cursel + 6 < m_entries.size())
+			if (m_cursel + 5 < m_entries.size())
 				entry = m_cursel + 5;
 			else
 				entry = m_entries.size() - 1;
@@ -576,6 +605,7 @@ void MyMenu::inputEvent(const Event & evt) {
 }
 
 void MyMenu::startExit() {
+	m_input_allowed = false;
 	// Apply some expmovers to the options.
 
 	for (unsigned int i = 0; i < m_entries.size(); i++) {
