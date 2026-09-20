@@ -188,11 +188,15 @@ docker run --rm -v "$PWD:/workspace:ro" bloom-tests
 
 These checks compile the production audio driver, VMU metadata/loading, menu
 helpers, input combos, settings parse/cycle, and extracted PVR routines, with
-hardware calls stubbed out and address/undefined-behavior sanitizers enabled. They cover audio startup, failure cleanup, silent fallback, reopening,
-stereo ordering across overflow and wrapping, silent underruns, bounded save
-titles, invalid icon counts, unsupported VMU ports, missing files, truncated
-saves, disc-image extensions, volume labels, and CD load error strings. They do
-not replace a KallistiOS build or testing on Dreamcast hardware.
+hardware calls stubbed out and address/undefined-behavior sanitizers enabled.
+Compiler warnings fail the run (`-Werror`). They cover audio startup, failure
+cleanup, silent fallback, reopening, stereo ordering across overflow and
+wrapping, silent underruns, bounded save titles, invalid icon counts,
+unsupported VMU ports, missing files, truncated saves, disc-image extensions,
+volume labels, and CD load error strings. They do not replace a KallistiOS
+build or testing on Dreamcast hardware. GitHub Actions runs the same suites
+on this repository (`host-tests`); the Dreamcast `build` workflow stays
+limited to the upstream toolchain image.
 
 PVR regression coverage also checks that disabled scanout continues drawing
 sprites and lines into PSX VRAM without accumulating hardware polygons,

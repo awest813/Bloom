@@ -6,4 +6,4 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-CMD ["python3", "tests/test_regressions.py"]
+CMD ["python3", "tests/test_regressions.py", "-v"]

@@ -17,10 +17,39 @@ ROOT = Path(__file__).resolve().parents[1]
 _HOST_CC = None
 
 
+def _skip_c_noise(source, i):
+    """Skip comments and quoted literals so brace matching follows C structure."""
+    n = len(source)
+    if i + 1 < n and source[i] == "/":
+        nxt = source[i + 1]
+        if nxt == "/":
+            end = source.find("\n", i + 2)
+            return n if end < 0 else end
+        if nxt == "*":
+            end = source.find("*/", i + 2)
+            return n if end < 0 else end + 2
+    if source[i] in "\"'":
+        quote = source[i]
+        i += 1
+        while i < n:
+            if source[i] == "\\":
+                i += 2
+                continue
+            if source[i] == quote:
+                return i + 1
+            i += 1
+        return n
+    return i
+
+
 def _match_pair(source, open_idx, open_ch, close_ch):
     depth = 0
     i = open_idx
     while i < len(source):
+        skipped = _skip_c_noise(source, i)
+        if skipped != i:
+            i = skipped
+            continue
         ch = source[i]
         if ch == open_ch:
             depth += 1
@@ -32,20 +61,35 @@ def _match_pair(source, open_idx, open_ch, close_ch):
     return -1
 
 
+def _line_looks_like_definition(source, line_start):
+    nl = source.find("\n", line_start)
+    line = source[line_start:] if nl < 0 else source[line_start:nl]
+    stripped = line.lstrip()
+    return not stripped.startswith(("#", "//", "/*", "*"))
+
+
 def extract_function(source, name):
     """Return one C function definition, matching braces across lines."""
-    pattern = re.compile(r"(?m)^[^\n]*\b" + re.escape(name) + r"\s*\(")
+    # Stop the prefix at '(' so a later same-name token on the line is not used.
+    pattern = re.compile(r"(?m)^[^\n(]*\b" + re.escape(name) + r"\s*\(")
     for match in pattern.finditer(source):
         line_start = source.rfind("\n", 0, match.start()) + 1
-        if "(" in source[line_start:match.start()]:
+        if not _line_looks_like_definition(source, line_start):
             continue
         paren = match.end() - 1
         close_paren = _match_pair(source, paren, "(", ")")
         if close_paren < 0:
             continue
         i = close_paren + 1
-        while i < len(source) and source[i] in " \t\r\n":
-            i += 1
+        while i < len(source):
+            skipped = _skip_c_noise(source, i)
+            if skipped != i:
+                i = skipped
+                continue
+            if source[i] in " \t\r\n":
+                i += 1
+                continue
+            break
         if i >= len(source) or source[i] != "{":
             continue
         close = _match_pair(source, i, "{", "}")
@@ -161,6 +205,32 @@ int main(void) {
         aica = (ROOT / "src/aica_out.c").read_text()
         feed = extract_function(aica, "aica_feed")
         self.assertIn("ring_drop", feed)
+        drop = extract_function(aica, "ring_drop")
+        self.assertIn("ring_count", drop)
+        self.assertIn("RING_SAMPLES", drop)
+        self.assertTrue(shutil.which(host_cc()))
+
+    def test_extractor_ignores_noise_and_prototypes(self):
+        source = r'''
+int decoy(int x); /* decoy() { return 0; } */
+#define decoy(x) { (x); }
+// decoy(int x) { return "{"; }
+int decoy(int x) {
+    /* unmatched { in a comment */
+    const char *s = "braces { } inside a string";
+    if (x) {
+        return x;
+    }
+    return 0;
+}
+'''
+        body = extract_function(source, "decoy")
+        self.assertIn("braces { } inside a string", body)
+        self.assertIn("unmatched { in a comment", body)
+        self.assertTrue(body.strip().endswith("}"))
+        self.assertNotIn("#define decoy", body)
+        with self.assertRaises(AssertionError):
+            extract_function("int missing(void);\n", "missing")
 
     def compile_and_run(self, source, extra_sources=None):
         with tempfile.TemporaryDirectory() as directory:
@@ -168,7 +238,8 @@ int main(void) {
             binary = Path(directory) / "check"
             source_path.write_text(source)
             command = [host_cc(), "-std=gnu11",
-                       "-g", "-Wall", "-Wextra", "-Wno-unused-function",
+                       "-g", "-Wall", "-Wextra", "-Werror",
+                       "-Wno-unused-function", "-Wno-unused-parameter",
                        "-fno-omit-frame-pointer",
                        "-fsanitize=address,undefined",
                        "-fno-sanitize-recover=all",
@@ -184,8 +255,8 @@ int main(void) {
             self.assertEqual(compiled.returncode, 0,
                              compiled.stdout + compiled.stderr)
             env = os.environ.copy()
-            env.setdefault("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=1")
-            env.setdefault("UBSAN_OPTIONS", "print_stacktrace=1:halt_on_error=1")
+            env["ASAN_OPTIONS"] = "detect_leaks=1:abort_on_error=1"
+            env["UBSAN_OPTIONS"] = "print_stacktrace=1:halt_on_error=1"
             result = subprocess.run([str(binary)], capture_output=True,
                                     text=True, env=env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
