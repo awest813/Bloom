@@ -107,6 +107,23 @@ const char *menu_cd_error_text(int code)
 	}
 }
 
+int menu_cd_error_from_open(int ret)
+{
+	if (ret >= 0)
+		return MENU_CD_OK;
+
+	ret = -ret;
+	switch (ret) {
+	case MENU_CD_ERR_CDR:
+	case MENU_CD_ERR_SPU:
+	case MENU_CD_ERR_GPU:
+	case MENU_CD_ERR_PLUGIN:
+		return ret;
+	default:
+		return MENU_CD_ERR_PLUGIN;
+	}
+}
+
 void menu_truncate(char *dst, size_t dst_sz, const char *src, size_t max_chars)
 {
 	size_t len;

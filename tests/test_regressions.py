@@ -231,6 +231,11 @@ int main(void) {
     assert(strcmp(menu_cd_error_text(MENU_CD_ERR_GPU), "Could not open GPU") == 0);
     assert(strcmp(menu_cd_error_text(MENU_CD_ERR_NOT_PSX), "Not a PlayStation disc image") == 0);
     assert(strcmp(menu_cd_error_text(MENU_CD_ERR_NO_DISC), "No PlayStation disc detected") == 0);
+    assert(menu_cd_error_from_open(0) == MENU_CD_OK);
+    assert(menu_cd_error_from_open(-MENU_CD_ERR_CDR) == MENU_CD_ERR_CDR);
+    assert(menu_cd_error_from_open(-MENU_CD_ERR_SPU) == MENU_CD_ERR_SPU);
+    assert(menu_cd_error_from_open(-MENU_CD_ERR_GPU) == MENU_CD_ERR_GPU);
+    assert(menu_cd_error_from_open(-99) == MENU_CD_ERR_PLUGIN);
 
     menu_truncate(buf, sizeof(buf), "short", 8);
     assert(strcmp(buf, "short") == 0);
@@ -279,28 +284,35 @@ static int is_readable(const char *path) {
 
 int main(void) {
     struct bloom_settings s;
+    struct bloom_settings_boot boot = {
+        .video_480p = 1, .allow_480p = 1, .allow_aica = 1, .allow_bilinear = 1,
+        .hybrid = 1, .allow_hybrid = 1, .clipping = 1, .allow_clipping = 1,
+        .fsaa = 0, .allow_fsaa = 1,
+    };
     char line[80];
     const char *paths[] = { "/sd/bloom.cfg", "/ide/bloom.cfg", "/ram/bloom.cfg" };
     FILE *fp = tmpfile();
     char buf[256];
 
-    bloom_settings_reset(&s, 1, 0, 0, 1, 1, 1);
+    bloom_settings_reset(&s, &boot);
     assert(s.rumble && s.analog && s.video_480p && !s.bilinear && !s.silent_audio);
+    assert(s.hybrid && s.clipping && !s.fsaa);
     assert(bloom_settings_parse_line(&s, "last_path=/etc/passwd") == 1);
     assert(s.last_path[0] == 0);
     assert(bloom_settings_parse_line(&s, "last_path=/sd/games"));
     assert(bloom_settings_parse_line(&s, " silent_audio = on "));
+    assert(bloom_settings_parse_line(&s, "hybrid=off"));
     assert(bloom_settings_parse_line(&s, "# comment") == 0);
-    assert(s.silent_audio);
+    assert(s.silent_audio && !s.hybrid);
     assert(strcmp(s.last_path, "/sd/games") == 0);
     assert(bloom_settings_write_to(&s, fp) == 0);
     rewind(fp);
-    bloom_settings_reset(&s, 1, 0, 0, 1, 1, 1);
+    bloom_settings_reset(&s, &boot);
     assert(bloom_settings_load_from(&s, fp) >= 4);
     assert(s.silent_audio && strcmp(s.last_path, "/sd/games") == 0);
     fclose(fp);
 
-    bloom_settings_init(1, 0, 0, 1, 1, 1);
+    bloom_settings_init(&boot);
     bloom_settings_set_last_path("/ide/iso");
     assert(bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
     assert(bloom_want_silent_audio());
@@ -308,13 +320,41 @@ int main(void) {
     assert(strstr(line, "Silent"));
     assert(bloom_settings_cycle(BLOOM_SET_RUMBLE));
     assert(!bloom_settings_rumble());
+    assert(bloom_settings_cycle(BLOOM_SET_HYBRID));
+    assert(!bloom_settings_hybrid());
+    assert(bloom_settings_cycle(BLOOM_SET_CLIPPING));
+    assert(!bloom_settings_clipping());
+    assert(bloom_settings_cycle(BLOOM_SET_FSAA));
+    assert(bloom_settings_fsaa());
+    assert(bloom_settings_cycle(BLOOM_SET_BILINEAR));
+    assert(bloom_settings_bilinear());
 
-    bloom_settings_init(0, 0, 1, 0, 0, 0);
+    struct bloom_settings_boot locked = { .silent_audio = 1 };
+    bloom_settings_init(&locked);
     assert(bloom_want_silent_audio());
     assert(!bloom_settings_video_480p());
+    assert(!bloom_settings_bilinear());
+    assert(!bloom_settings_hybrid());
+    assert(!bloom_settings_clipping());
+    assert(!bloom_settings_fsaa());
     assert(!bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
     assert(!bloom_settings_cycle(BLOOM_SET_VIDEO_480P));
     assert(!bloom_settings_cycle(BLOOM_SET_BILINEAR));
+    assert(!bloom_settings_cycle(BLOOM_SET_HYBRID));
+    assert(!bloom_settings_cycle(BLOOM_SET_CLIPPING));
+    assert(!bloom_settings_cycle(BLOOM_SET_FSAA));
+
+    bloom_settings_reset(&s, &locked);
+    assert(bloom_settings_parse_line(&s, "hybrid=1"));
+    assert(bloom_settings_parse_line(&s, "clipping=1"));
+    assert(bloom_settings_parse_line(&s, "fsaa=1"));
+    fp = tmpfile();
+    assert(fp && bloom_settings_write_to(&s, fp) == 0);
+    rewind(fp);
+    bloom_settings_reset(&s, &locked);
+    assert(bloom_settings_load_from(&s, fp) >= 3);
+    fclose(fp);
+    assert(!s.hybrid && !s.clipping && !s.fsaa);
 
     readable = "/ide/bloom.cfg";
     assert(strcmp(bloom_settings_choose_path(is_readable, paths, 3),

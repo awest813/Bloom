@@ -15,6 +15,7 @@
 void SPUirq(int);
 
 static unsigned long gpuDisp;
+static int plugins_opened;
 
 static int _OpenPlugins() {
 	int ret;
@@ -46,23 +47,37 @@ static int _OpenPlugins() {
 }
 
 int OpenPlugins() {
+	int ret;
+
 	plugin_call_rearmed_cbs();
-	return _OpenPlugins();
+	if (plugins_opened)
+		return 0;
+	ret = _OpenPlugins();
+	if (ret == 0)
+		plugins_opened = 1;
+	return ret;
 }
 
 void ClosePlugins() {
 	int ret;
 
+	if (!plugins_opened)
+		return;
+	plugins_opened = 0;
+
 	cdra_close();
 	ret = SPU_close();
-	if (ret < 0) { SysPrintf("Error Closing SPU Plugin\n"); return; }
+	if (ret < 0)
+		SysPrintf("Error Closing SPU Plugin\n");
 	ret = GPU_close();
-	if (ret < 0) { SysPrintf("Error Closing GPU Plugin\n"); return; }
+	if (ret < 0)
+		SysPrintf("Error Closing GPU Plugin\n");
 }
 
 void ResetPlugins() {
 	int ret;
 
+	plugins_opened = 0;
 	cdra_shutdown();
 	GPU_shutdown();
 	SPU_shutdown();

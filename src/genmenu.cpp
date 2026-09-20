@@ -713,6 +713,15 @@ void MyMenu::populateSettings()
 	if (opt && opt->allow_bilinear)
 		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_BILINEAR,
 						       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_hybrid)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_HYBRID,
+						       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_clipping)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_CLIPPING,
+						       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_fsaa)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_FSAA,
+						       CREDITS_ENTRY_SIZE));
 	add_info("");
 	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
 			: "Saved to /sd, /ide, or /ram when possible");
@@ -722,11 +731,9 @@ void MyMenu::populateSettings()
 		 "  (rebuild to change)");
 	add_info(std::string("SPU mix        ") + SPU_PLUGIN +
 		 "  (rebuild to change)");
-	add_info(std::string("Hybrid         ") +
-		 (WITH_HYBRID_RENDERING ? "on" : "off") +
-		 "   FSAA " + (WITH_FSAA ? "on" : "off") +
-		 "   24-bit " + (WITH_24BPP ? "on" : "off"));
-	add_info("Clipping, CHD, IDE, and SD stay compile-time.");
+	add_info(std::string("24-bit FB      ") + (WITH_24BPP ? "on" : "off") +
+		 "  (rebuild to change)");
+	add_info("CHD, IDE, and SD stay compile-time.");
 
 	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
 		m_top_scene->animRemoveAll();

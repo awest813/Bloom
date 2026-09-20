@@ -22,6 +22,9 @@ enum bloom_setting_id {
 	BLOOM_SET_ANALOG,
 	BLOOM_SET_VIDEO_480P,
 	BLOOM_SET_BILINEAR,
+	BLOOM_SET_HYBRID,
+	BLOOM_SET_CLIPPING,
+	BLOOM_SET_FSAA,
 	BLOOM_SET_COUNT
 };
 
@@ -32,16 +35,35 @@ struct bloom_settings {
 	int analog;
 	int video_480p;
 	int bilinear;
+	int hybrid;
+	int clipping;
+	int fsaa;
 	int allow_480p;
 	int allow_aica;
 	int allow_bilinear;
+	int allow_hybrid;
+	int allow_clipping;
+	int allow_fsaa;
 };
 
-void bloom_settings_reset(struct bloom_settings *s, int video_480p,
-			  int bilinear, int silent_audio, int allow_480p,
-			  int allow_aica, int allow_bilinear);
-void bloom_settings_init(int video_480p, int bilinear, int silent_audio,
-			 int allow_480p, int allow_aica, int allow_bilinear);
+struct bloom_settings_boot {
+	int video_480p;
+	int bilinear;
+	int silent_audio;
+	int hybrid;
+	int clipping;
+	int fsaa;
+	int allow_480p;
+	int allow_aica;
+	int allow_bilinear;
+	int allow_hybrid;
+	int allow_clipping;
+	int allow_fsaa;
+};
+
+void bloom_settings_reset(struct bloom_settings *s,
+			  const struct bloom_settings_boot *boot);
+void bloom_settings_init(const struct bloom_settings_boot *boot);
 struct bloom_settings *bloom_settings_get(void);
 
 int bloom_settings_parse_line(struct bloom_settings *s, const char *line);
@@ -65,6 +87,9 @@ int bloom_settings_bilinear(void);
 int bloom_settings_rumble(void);
 int bloom_settings_analog(void);
 int bloom_settings_video_480p(void);
+int bloom_settings_hybrid(void);
+int bloom_settings_clipping(void);
+int bloom_settings_fsaa(void);
 
 #ifdef __cplusplus
 }

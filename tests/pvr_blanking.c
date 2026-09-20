@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 #define PSX_GPU_STATUS_BLANKING (1u << 23)
+#define PVR_OPT_HYBRID() 1
+#define PVR_OPT_CLIP() 1
 #define likely(x) (x)
 #define TEXWIN_SPLIT_MAX 64
 static struct { unsigned int status; } gpu;

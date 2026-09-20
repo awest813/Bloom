@@ -42,37 +42,53 @@ static void strip(char *s)
 		*--end = '\0';
 }
 
-void bloom_settings_reset(struct bloom_settings *s, int video_480p,
-			  int bilinear, int silent_audio, int allow_480p,
-			  int allow_aica, int allow_bilinear)
+void bloom_settings_reset(struct bloom_settings *s,
+			  const struct bloom_settings_boot *boot)
 {
 	memset(s, 0, sizeof(*s));
 	s->rumble = 1;
 	s->analog = 1;
-	s->allow_480p = !!allow_480p;
-	s->allow_aica = !!allow_aica;
-	s->allow_bilinear = !!allow_bilinear;
-	s->video_480p = video_480p && s->allow_480p;
-	s->bilinear = bilinear && s->allow_bilinear;
-	s->silent_audio = silent_audio || !s->allow_aica;
+	if (!boot)
+		return;
+	s->allow_480p = !!boot->allow_480p;
+	s->allow_aica = !!boot->allow_aica;
+	s->allow_bilinear = !!boot->allow_bilinear;
+	s->allow_hybrid = !!boot->allow_hybrid;
+	s->allow_clipping = !!boot->allow_clipping;
+	s->allow_fsaa = !!boot->allow_fsaa;
+	s->video_480p = boot->video_480p && s->allow_480p;
+	s->bilinear = boot->bilinear && s->allow_bilinear;
+	s->silent_audio = boot->silent_audio || !s->allow_aica;
+	s->hybrid = boot->hybrid && s->allow_hybrid;
+	s->clipping = boot->clipping && s->allow_clipping;
+	s->fsaa = boot->fsaa && s->allow_fsaa;
 }
 
-void bloom_settings_init(int video_480p, int bilinear, int silent_audio,
-			 int allow_480p, int allow_aica, int allow_bilinear)
+static void bloom_settings_clamp(struct bloom_settings *s)
+{
+	if (!s->allow_480p)
+		s->video_480p = 0;
+	if (!s->allow_aica)
+		s->silent_audio = 1;
+	if (!s->allow_bilinear)
+		s->bilinear = 0;
+	if (!s->allow_hybrid)
+		s->hybrid = 0;
+	if (!s->allow_clipping)
+		s->clipping = 0;
+	if (!s->allow_fsaa)
+		s->fsaa = 0;
+	if (!menu_path_allowed(s->last_path))
+		s->last_path[0] = '\0';
+}
+
+void bloom_settings_init(const struct bloom_settings_boot *boot)
 {
 	g_path[0] = '\0';
 	g_dirty = 0;
-	bloom_settings_reset(&g_settings, video_480p, bilinear, silent_audio,
-			     allow_480p, allow_aica, allow_bilinear);
+	bloom_settings_reset(&g_settings, boot);
 	bloom_settings_load();
-	if (!g_settings.allow_480p)
-		g_settings.video_480p = 0;
-	if (!g_settings.allow_aica)
-		g_settings.silent_audio = 1;
-	if (!g_settings.allow_bilinear)
-		g_settings.bilinear = 0;
-	if (!menu_path_allowed(g_settings.last_path))
-		g_settings.last_path[0] = '\0';
+	bloom_settings_clamp(&g_settings);
 	g_dirty = 0;
 }
 
@@ -129,6 +145,18 @@ int bloom_settings_parse_line(struct bloom_settings *s, const char *line)
 		s->bilinear = truthy(val);
 		return 1;
 	}
+	if (!strcmp(buf, "hybrid")) {
+		s->hybrid = truthy(val);
+		return 1;
+	}
+	if (!strcmp(buf, "clipping")) {
+		s->clipping = truthy(val);
+		return 1;
+	}
+	if (!strcmp(buf, "fsaa")) {
+		s->fsaa = truthy(val);
+		return 1;
+	}
 	return 0;
 }
 
@@ -142,9 +170,12 @@ int bloom_settings_write_to(const struct bloom_settings *s, FILE *fp)
 		"rumble=%d\n"
 		"analog=%d\n"
 		"video_480p=%d\n"
-		"bilinear=%d\n",
+		"bilinear=%d\n"
+		"hybrid=%d\n"
+		"clipping=%d\n"
+		"fsaa=%d\n",
 		s->last_path, s->silent_audio, s->rumble, s->analog,
-		s->video_480p, s->bilinear) < 0 ? -1 : 0;
+		s->video_480p, s->bilinear, s->hybrid, s->clipping, s->fsaa) < 0 ? -1 : 0;
 }
 
 int bloom_settings_load_from(struct bloom_settings *s, FILE *fp)
@@ -156,6 +187,7 @@ int bloom_settings_load_from(struct bloom_settings *s, FILE *fp)
 		return 0;
 	while (fgets(line, sizeof(line), fp))
 		n += bloom_settings_parse_line(s, line);
+	bloom_settings_clamp(s);
 	return n;
 }
 
@@ -208,6 +240,7 @@ int bloom_settings_load(void)
 	snprintf(g_path, sizeof(g_path), "%s", path);
 	bloom_settings_load_from(&g_settings, fp);
 	fclose(fp);
+	bloom_settings_clamp(&g_settings);
 	return 1;
 }
 
@@ -285,6 +318,24 @@ int bloom_settings_cycle(enum bloom_setting_id id)
 		g_settings.bilinear = !g_settings.bilinear;
 		g_dirty = 1;
 		return 1;
+	case BLOOM_SET_HYBRID:
+		if (!g_settings.allow_hybrid)
+			return 0;
+		g_settings.hybrid = !g_settings.hybrid;
+		g_dirty = 1;
+		return 1;
+	case BLOOM_SET_CLIPPING:
+		if (!g_settings.allow_clipping)
+			return 0;
+		g_settings.clipping = !g_settings.clipping;
+		g_dirty = 1;
+		return 1;
+	case BLOOM_SET_FSAA:
+		if (!g_settings.allow_fsaa)
+			return 0;
+		g_settings.fsaa = !g_settings.fsaa;
+		g_dirty = 1;
+		return 1;
 	default:
 		return 0;
 	}
@@ -326,6 +377,27 @@ void bloom_settings_line(enum bloom_setting_id id, char *dst, size_t dst_sz)
 		else
 			right = g_settings.bilinear ? "On" : "Off";
 		break;
+	case BLOOM_SET_HYBRID:
+		left = "Hybrid render";
+		if (!g_settings.allow_hybrid)
+			right = "Off (this build)";
+		else
+			right = g_settings.hybrid ? "On" : "Off";
+		break;
+	case BLOOM_SET_CLIPPING:
+		left = "Pixel clipping";
+		if (!g_settings.allow_clipping)
+			right = "Off (this build)";
+		else
+			right = g_settings.clipping ? "On" : "Off";
+		break;
+	case BLOOM_SET_FSAA:
+		left = "FSAA";
+		if (!g_settings.allow_fsaa)
+			right = "Off (this build)";
+		else
+			right = g_settings.fsaa ? "On" : "Off";
+		break;
 	default:
 		left = "Setting";
 		right = "";
@@ -357,4 +429,19 @@ int bloom_settings_analog(void)
 int bloom_settings_video_480p(void)
 {
 	return g_settings.video_480p && g_settings.allow_480p;
+}
+
+int bloom_settings_hybrid(void)
+{
+	return g_settings.hybrid && g_settings.allow_hybrid;
+}
+
+int bloom_settings_clipping(void)
+{
+	return g_settings.clipping && g_settings.allow_clipping;
+}
+
+int bloom_settings_fsaa(void)
+{
+	return g_settings.fsaa && g_settings.allow_fsaa;
 }

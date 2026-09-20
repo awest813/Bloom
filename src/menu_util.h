@@ -30,6 +30,7 @@ bool menu_is_browser_root(const char *name);
 bool menu_path_allowed(const char *path);
 const char *menu_volume_label(const char *name);
 const char *menu_cd_error_text(int code);
+int menu_cd_error_from_open(int ret);
 void menu_truncate(char *dst, size_t dst_sz, const char *src, size_t max_chars);
 void menu_format_location(char *dst, size_t dst_sz, const char *path);
 unsigned int menu_page_step(unsigned int list_top, unsigned int list_bottom,

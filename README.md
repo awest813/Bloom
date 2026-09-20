@@ -68,10 +68,11 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 
 - **PVR still glitches** on some effects (hybrid rendering, remaining GPU holes). Use Unai when a title needs accurate drawing.
 - **No in-game pause**, disc-swap UI, or savestate UI. Settings persist audio
-  output, rumble, analog, 480p, bilinear, and the last browse folder to
-  `/sd/bloom.cfg`, `/ide/bloom.cfg`, or `/ram/bloom.cfg`. GPU plugin, hybrid
-  rendering, FSAA, and clipping stay compile-time. Build info remains a
-  read-only summary.
+  output, rumble, analog, 480p, bilinear, hybrid rendering, clipping, FSAA,
+  and the last browse folder to `/sd/bloom.cfg`, `/ide/bloom.cfg`, or
+  `/ram/bloom.cfg`. GPU plugin (PVR vs Unai) and 24-bit framebuffer stay
+  compile-time. Options compiled out of a build show as “this build” and
+  cannot be toggled. Build info remains a read-only summary.
 - **3D is often far from full speed** (community reports around 30 fps 2D / 10 fps 3D).
 - **Audio has no reverb** yet. If the AICA stream fails to start, dfsound falls back to silent output; IRQs still fire.
 - Light gun and keyboard-as-controller are stubs.

@@ -99,8 +99,8 @@ Almost every user-facing setting is compile-time only.
    hybrid rendering, and SPU backend, persisted to `/sd` or `/ide` when
    present, otherwise VMU/VMU-incompatible `/ram`.
    **Partly done:** Settings persist last folder, AICA vs silent output,
-   rumble, analog, 480p, and bilinear. PVR vs Unai and hybrid/FSAA/clipping
-   still need a rebuild.
+   rumble, analog, 480p, bilinear, hybrid rendering, clipping, and FSAA
+   when those features are compiled in. PVR vs Unai still needs a rebuild.
 2. In-game pause: START combo or a dedicated chord that does not eat PS1
    Start. From there: resume, reset, swap disc, save/load state, quit to
    menu.
@@ -171,7 +171,8 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Menu chrome: title, location, hints, smear shadows, left-aligned
   browser, volume names, paging with L/R, wrap-around, last folder
 - Settings screen: AICA vs silent SPU output, rumble, analog, 480p, bilinear,
-  last folder; saved to `/sd`, `/ide`, or `/ram`
+  hybrid/clipping/FSAA when compiled in, last folder; saved to `/sd`, `/ide`,
+  or `/ram`
 - Checking a disc paints a status line for a frame before `CheckCdrom()`
 - Plugin open failures name CD-ROM vs audio vs GPU and close what opened
 - Host regression checks cover audio buffering and VMU loading/metadata;
