@@ -184,7 +184,9 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Build info lists live Settings plus compile-time GPU/SPU/24-bit; a failed
   plugin open after launch returns to the menu with that error; a missing
   saved folder is repaired before the browser opens
-- Host regression checks cover audio buffering and VMU loading/metadata;
+- Host regression checks pick a sanitizer-capable compiler (gcc when Clang
+  lacks libclang-rt), extract production functions by brace matching, and
+  report compiler errors;
   sanitizer suites pass in Docker, including PVR display blanking, hybrid
   enqueue policy, texture-cache update boundaries, menu path/error helpers,
   and settings

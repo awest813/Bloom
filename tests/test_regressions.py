@@ -8,23 +8,88 @@ integration test.
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+_HOST_CC = None
+
+
+def _match_pair(source, open_idx, open_ch, close_ch):
+    depth = 0
+    i = open_idx
+    while i < len(source):
+        ch = source[i]
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def extract_function(source, name):
+    """Return one C function definition, matching braces across lines."""
+    pattern = re.compile(r"(?m)^[^\n]*\b" + re.escape(name) + r"\s*\(")
+    for match in pattern.finditer(source):
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        if "(" in source[line_start:match.start()]:
+            continue
+        paren = match.end() - 1
+        close_paren = _match_pair(source, paren, "(", ")")
+        if close_paren < 0:
+            continue
+        i = close_paren + 1
+        while i < len(source) and source[i] in " \t\r\n":
+            i += 1
+        if i >= len(source) or source[i] != "{":
+            continue
+        close = _match_pair(source, i, "{", "}")
+        if close < 0:
+            continue
+        return source[line_start:close + 1]
+    raise AssertionError("Missing production function: " + name)
 
 
 def functions(path, names):
     source = (ROOT / path).read_text()
-    result = []
-    for name in names:
-        match = re.search(r"^[^\n]*\b" + name + r"\([^;]*?\n\{.*?^\}",
-                          source, re.MULTILINE | re.DOTALL)
-        if not match:
-            raise AssertionError("Missing production function: " + name)
-        result.append(match.group())
-    return "\n".join(result)
+    return "\n".join(extract_function(source, name) for name in names)
+
+
+def host_cc():
+    """Prefer $CC, then gcc, then clang, using the first that links ASan/UBSan."""
+    global _HOST_CC
+    if _HOST_CC:
+        return _HOST_CC
+
+    ordered = []
+    env_cc = os.environ.get("CC")
+    if env_cc:
+        ordered.append(env_cc)
+    for candidate in ("gcc", "clang"):
+        if candidate not in ordered and shutil.which(candidate):
+            ordered.append(candidate)
+
+    errors = []
+    for compiler in ordered:
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "probe.c"
+            out = Path(directory) / "probe"
+            src.write_text("int main(void) { return 0; }\n")
+            probe = subprocess.run(
+                [compiler, "-fsanitize=address,undefined", str(src), "-o", str(out)],
+                capture_output=True, text=True)
+            if probe.returncode == 0:
+                _HOST_CC = compiler
+                return compiler
+            errors.append("%s: %s" % (compiler, (probe.stderr or probe.stdout).strip()))
+
+    raise AssertionError(
+        "No compiler with address/undefined sanitizers. Tried:\n" + "\n".join(errors))
 
 
 class RegressionTests(unittest.TestCase):
@@ -85,13 +150,27 @@ int main(void) {
             "/* Production functions are inserted here by test_regressions.py. */",
             production))
 
+    def test_extracts_real_production_functions(self):
+        pvr = (ROOT / "src/pvr.c").read_text()
+        hybrid = extract_function(pvr, "pvr_hybrid_enqueue_kind")
+        mask = extract_function(pvr, "get_block_mask")
+        self.assertIn("buffered < cap", hybrid)
+        self.assertNotIn("poly_get_block_mask", mask)
+        self.assertIn("return get_block_mask",
+                      extract_function(pvr, "vram_update_block_mask"))
+        aica = (ROOT / "src/aica_out.c").read_text()
+        feed = extract_function(aica, "aica_feed")
+        self.assertIn("ring_drop", feed)
+
     def compile_and_run(self, source, extra_sources=None):
         with tempfile.TemporaryDirectory() as directory:
             source_path = Path(directory) / "check.c"
             binary = Path(directory) / "check"
             source_path.write_text(source)
-            command = [os.environ.get("CC", "clang"), "-std=gnu11",
-                       "-g", "-fsanitize=address,undefined",
+            command = [host_cc(), "-std=gnu11",
+                       "-g", "-Wall", "-Wextra", "-Wno-unused-function",
+                       "-fno-omit-frame-pointer",
+                       "-fsanitize=address,undefined",
                        "-fno-sanitize-recover=all",
                        "-I" + str(ROOT),
                        "-I" + str(ROOT / "src"),
@@ -101,8 +180,14 @@ int main(void) {
             for extra in extra_sources or []:
                 command.append(str(extra))
             command.extend(["-o", str(binary)])
-            subprocess.run(command, check=True)
-            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            compiled = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(compiled.returncode, 0,
+                             compiled.stdout + compiled.stderr)
+            env = os.environ.copy()
+            env.setdefault("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=1")
+            env.setdefault("UBSAN_OPTIONS", "print_stacktrace=1:halt_on_error=1")
+            result = subprocess.run([str(binary)], capture_output=True,
+                                    text=True, env=env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_vmu_ports_and_incomplete_reads(self):

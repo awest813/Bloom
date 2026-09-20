@@ -169,11 +169,15 @@ make
 
 ## Host regression checks
 
-With Python 3 and Clang installed, run:
+With Python 3 and GCC or Clang (with ASan/UBSan runtimes) installed:
 
 ```sh
 python3 tests/test_regressions.py
 ```
+
+The harness uses `$CC` when it can link sanitizers, otherwise `gcc`, then
+`clang`. On Ubuntu images that ship Clang without `libclang-rt`, set
+`CC=gcc`.
 
 Or run the same checks in Docker from the repository root:
 
@@ -182,11 +186,9 @@ docker build -f tests/Dockerfile -t bloom-tests .
 docker run --rm -v "$PWD:/workspace:ro" bloom-tests
 ```
 
-These checks compile the complete production audio driver and dfsound output
-selection, the VMU metadata/loading routines, the menu path/error helpers,
-and settings parse/cycle,
-with hardware calls stubbed out and address/undefined-behavior sanitizers
-enabled. They cover audio startup, failure cleanup, silent fallback, reopening,
+These checks compile the production audio driver, VMU metadata/loading, menu
+helpers, input combos, settings parse/cycle, and extracted PVR routines, with
+hardware calls stubbed out and address/undefined-behavior sanitizers enabled. They cover audio startup, failure cleanup, silent fallback, reopening,
 stereo ordering across overflow and wrapping, silent underruns, bounded save
 titles, invalid icon counts, unsupported VMU ports, missing files, truncated
 saves, disc-image extensions, volume labels, and CD load error strings. They do
