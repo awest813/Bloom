@@ -77,6 +77,17 @@ int main(void) {
 }
 ''')
 
+    def test_pvr_bilinear_applies_when_list_opens(self):
+        src = (ROOT / "src/pvr.c").read_text()
+        start = src.find("void pvr_renderer_init(void)")
+        end = src.find("\nint renderer_init", start)
+        self.assertGreater(start, 0)
+        self.assertGreater(end, start)
+        self.assertNotIn("poly_textured", src[start:end])
+        list_fn = src.find("static void pvr_set_list(")
+        self.assertGreater(list_fn, 0)
+        self.assertIn("filter_mode = PVR_OPT_BILINEAR()", src[list_fn:list_fn + 500])
+
     def test_pvr_blanked_display_writes_vram_without_hardware_queues(self):
         source = (ROOT / "tests/pvr_blanking.c").read_text()
         production = functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_draw",
@@ -275,6 +286,8 @@ int main(void) {
     assert(menu_wrap_index(-1, 5) == 4);
     assert(menu_wrap_index(5, 5) == 0);
     assert(menu_wrap_index(2, 5) == 2);
+    assert(menu_wrap_index(-6, 5) == 4);
+    assert(menu_wrap_index(7, 5) == 2);
     assert(menu_clamp_index(-3, 5) == 0);
     assert(menu_clamp_index(9, 5) == 4);
     assert(menu_clamp_index(1, 0) == 0);
@@ -379,6 +392,10 @@ int main(void) {
     assert(bloom_want_silent_audio());
     bloom_settings_line(BLOOM_SET_SILENT_AUDIO, line, sizeof(line));
     assert(strstr(line, "Silent"));
+    bloom_settings_line(BLOOM_SET_HYBRID, line, sizeof(line));
+    assert(strstr(line, "PT/TR"));
+    bloom_settings_line(BLOOM_SET_FSAA, line, sizeof(line));
+    assert(strstr(line, "FSAA"));
     assert(bloom_settings_cycle(BLOOM_SET_RUMBLE));
     assert(!bloom_settings_rumble());
     assert(bloom_settings_cycle(BLOOM_SET_HYBRID));

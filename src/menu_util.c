@@ -201,10 +201,9 @@ unsigned int menu_wrap_index(int index, unsigned int count)
 {
 	if (count == 0)
 		return 0;
+	index %= (int)count;
 	if (index < 0)
-		return count - 1;
-	if ((unsigned int)index >= count)
-		return 0;
+		index += (int)count;
 	return (unsigned int)index;
 }
 

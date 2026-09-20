@@ -108,10 +108,10 @@ Almost every user-facing setting is compile-time only.
 3. Savestates as a first-class feature, not only `WITH_BOOT_SSTATE`.
 4. Disc-image browser: remember last directory; show a spinner while
    `CheckCdrom()` runs (it can stall on bad dumps).
-   **Done in this branch (session memory, not persisted to SD/IDE):** the
-   browser reopens the last folder, restores the previous highlight when
-   going up, and paints a "Checking…" status for one frame before
-   `CheckCdrom()`. A true spinner still needs a second thread.
+   **Done in this branch:** last folder is persisted in Settings
+   (`/sd|/ide|/ram/bloom.cfg`); the browser restores highlight when going
+   up, and paints a status line for one frame before `CheckCdrom()`. A
+   true spinner still needs a second thread.
 5. Surface plugin open failures in the menu (CD-ROM vs. GPU vs. SPU), not
    only "could not load."
    **Done in this branch:** failed plugin opens unwind cleanly and the
@@ -199,6 +199,10 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
   PVR vertices when the UV range does not wrap, by tiling on-screen sprites,
   and by clipping wrapping triangles/quads on window-tile boundaries
 - Hybrid TR poly buffer overflow no longer drops primitives
+- Menu empty-device copy, locked audio/480p as info (not dead toggles),
+  wrap-around uses true modulo, status tint resets, FSAA/hybrid labels
+  name PT/TR and horizontal AA; PVR bilinear follows Settings when a list
+  opens (not in `pvr_renderer_init` before the header exists)
 - 1:1 mirrored sprites get a sub-texel UV inset (Hercules/Rayman garbage column)
 - Savestate replay restores the GPU draw area for the off-screen path
 - Default AICA plugin streams dfsound's mix (voices, XA, CDDA, SPU IRQs)
