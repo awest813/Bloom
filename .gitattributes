@@ -1,0 +1,7 @@
+# Shell and Python scripts are executed by Linux/macOS toolchains and by the
+# Alpine CI image, which has no shell that tolerates a CRLF shebang. A Windows
+# checkout with core.autocrlf=true would otherwise turn "#!/bin/sh" into
+# "#!/bin/sh\r" and every invocation fails with "No such file or directory".
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf

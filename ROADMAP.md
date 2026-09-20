@@ -14,9 +14,8 @@ basic stereo audio are far enough along to boot titles. What is not:
   and more accurate but needs a rebuild.
 - There is **no in-game pause**, disc-swap UI, or savestate UI.
 - 3D is often far from full speed (community reports ~30 fps 2D / ~10 fps 3D).
-- Flycast has seen Street Fighter Alpha 3 reach the animated intro with PVR
-  and built-in BIOS. Title-screen, gameplay, in-game audio, and physical
-  Dreamcast remain unverified.
+- A real game now boots end to end in Flycast (see gap 1), but video stops
+  updating partway into the intro while audio keeps playing.
 
 Settings persist last folder, silent vs AICA output, rumble, analog, 480p,
 bilinear, hybrid, clipping, and FSAA when those are compiled in. GPU plugin
@@ -28,24 +27,52 @@ Ordered by user-visible impact, then by how invasive the change is.
 Do **not** rewrite both GPU backends. Unai stays the accuracy backstop;
 PVR stays the speed path.
 
-### 1. Validate a real game on Flycast, then hardware
+### 1. Video freezes mid-FMV while audio keeps running
 
-**Why first:** later PVR and audio work is guesswork until SFA3 (or one 2D
-fighter) reaches a title screen with sound.
+**Why first:** this is the one blocker with fresh, reproducible evidence, and
+it stops any title with an intro movie before gameplay is reachable.
 
-- Rebuild with packed OpenBIOS (#7) and PVR; Flycast interpreter + serial.
-- Confirm title screen, at least one round of gameplay, and AICA output.
-- Diff the same scene on Unai.
-- Repeat on a 16 MiB Dreamcast if a disc or SD image can be written.
+Observed 2026-09-20, Flycast 2.7 on Windows x86-64, default build (PVR, AICA,
+packed OpenBIOS), Final Fantasy VI from a PS1 CHD packed onto the same disc
+with `-DWITH_GAME_PATH=/cd/ff6.chd`:
 
-**Touches:** packaging (`docs/docker-dreamcast.md`), not core code unless a
-blocker shows up. **Risk:** Flycast MMU/dynarec already asserts; interpreter
-is the known-good path.
+- Boot is clean: black during startup, then the "Published by Square
+  Electronic Arts L.L.C." screen, then the intro FMV, which plays and
+  visibly advances.
+- Partway into the FMV the picture stops advancing. Screen captures 60 s
+  apart are pixel-identical, and Flycast's own frame counter holds steady at
+  5.7 fps rather than falling to zero — so the Dreamcast side keeps
+  presenting, it just presents the same content.
+- Audio keeps playing throughout, so the PS1 CPU and the dfsound mix are
+  still running. The stall is somewhere between the disc/FMV data path and
+  what reaches `dc_vout_flip()`.
+
+Next steps, cheapest first:
+
+1. Run the Unai build (`build/docker/bloom-ff6-unai.cdi`, already packaged)
+   against the same scene. If it also freezes, the renderer is not at fault
+   and the disc/CD-streaming path is; if it does not, it is a PVR bug.
+   This single run decides where the rest of the work goes.
+2. Get on-target `printf` out. Serial console via
+   `-config config:Debug.SerialConsoleEnabled=yes` produced nothing on
+   Windows; try a macOS/Linux Flycast or dc-load. Without a log this is
+   guesswork.
+3. FF6's intro is a 24-bit FMV, so it takes the software path in
+   `dc_vout_flip()` (`copy24()`), not the hardware one. Check the
+   `frame_was_24bpp` / `dc_alloc_pvram()` / `pvr_mem_free(pvram)` pairing
+   across mode changes and display-disable, which is the one place that
+   bookkeeping can desync.
+4. Check whether `cdra_` async reads are still completing (CHD hunk
+   decompression on a 16 MiB machine is the other candidate).
+
+**Touches:** `src/platform.c`, `src/pvr.c`, the pcsx CD path. **Risk:**
+unknown until step 1 narrows it.
 
 ### 2. In-game pause and quit to menu
 
 **Why:** you cannot leave a game without `START+A+B+X+Y` (full quit). There
-is no resume, reset, or disc swap.
+is no resume, reset, or disc swap. Four of the CHDs on hand are multi-disc
+(FF7, FF8, FF9), so disc swap is not hypothetical.
 
 - Chord that does **not** eat PS1 Start (hold START + a face button that is
   already a combo, or a new chord documented in README).
@@ -84,7 +111,7 @@ bilinear placement. Still open in the renderer:
 **Touches:** `src/pvr.c` only, with Unai screenshot diffs. **Risk:** high;
 keep changes local to one primitive class per PR.
 
-### 5. Performance (only after a game is playable)
+### 5. Performance (only after gap 1 is closed)
 
 `pl_frame_limit()` is empty on purpose: sleeping while frames already miss
 16.7 ms makes the emulator slower.
@@ -95,6 +122,10 @@ keep changes local to one primitive class per PR.
 3. Measure Lightrec code-buffer invalidation (`CODE_BUFFER_SIZE_MB`,
    `src/mmap.c`) on long sessions.
 4. Add a frame limiter only when average frame time is under 16.7/20 ms.
+
+Note when reading any Flycast number: with `Dynarec.Enabled=no` the host
+emulator is itself the bottleneck. On the same FF6 FMV, Flycast managed
+0.5 fps on the interpreter and 5.7 fps with its dynarec.
 
 ### 6. Runtime GPU / 24-bit (hard; do not start early)
 
@@ -117,18 +148,34 @@ hardware.
 - VMU icon animation speed (`src/mcd.c` TODO).
 - Multi-partition IDE/SD and exFAT.
 - True spinner for `CheckCdrom()` (needs a second thread).
+- `emu.h` declares `mcd_fs_hotplug_vmu(struct maple_device *)`, but `mcd.c`
+  defines it `static` with a `void *` parameter. The declaration is unused
+  and cannot be satisfied; drop it.
 
 ## Suggested follow-up sequence
 
-1. Flycast (then hardware) validation of SFA3 or one 2D title — bugfix PRs
-   only as blockers appear.
-2. Pause + quit to menu.
-3. One savestate slot from pause.
-4. One PVR hole at a time (RTT or seams, not both).
-5. Profile-guided speed work.
-6. Reverb only if the overlay says the mix is idle.
+1. Unai-vs-PVR run to localize the FMV freeze (gap 1, step 1).
+2. Whatever that points at.
+3. Pause + quit to menu.
+4. One savestate slot from pause.
+5. One PVR hole at a time (RTT or seams, not both).
+6. Profile-guided speed work.
 
 ## Already done (do not re-do)
+
+Runtime: Final Fantasy VI boots from a CHD on `/cd` under Flycast with the
+packed OpenBIOS and reaches the intro FMV. Flycast's x86-64 dynarec runs this
+build without the `bm_AddBlock` assert seen on ARM64.
+
+Build: `.gitattributes` pins `*.sh`/`*.py`/`Dockerfile` to `eol=lf`, so a
+Windows checkout no longer breaks `openbios/insert_bios.sh` (CRLF shebang →
+exit 127 in the `embed-bios` step). The `dreamcast` workflow pins its
+toolchain image by digest; the `15.0.0-lra` tag has already drifted from GCC
+15 to GCC 17. GCC 15.1 LRA only on Lightrec; CMake fail-fast (unknown
+plugins, missing KOS toolchain, bad BIOS path); MIT OpenBIOS blob with
+SHA-512 check; host tests with sanitizer-capable compiler fallback and
+C-aware function extraction. `docs/docker-dreamcast.md` now describes a
+reproducible environment built from the CI image rather than a local SDK.
 
 Audio: AICA `snd_stream`, prefill, drop-oldest overflow, silent fallback,
 host sanitizer coverage, Flycast tone smoke.
@@ -139,10 +186,5 @@ overflow closes PT then flushes TR; bilinear from Settings at list open;
 draw-area restore from savestate ecmds.
 
 Menu/Settings: persisted `bloom.cfg`; last folder; named plugin errors;
-locked options as “this build”; wrap/page; rumble/analog immediate; empty
+locked options as "this build"; wrap/page; rumble/analog immediate; empty
 device copy; status tint reset; PT/TR and horizontal-FSAA labels.
-
-Build: GCC 15.1 LRA only on Lightrec; CMake fail-fast (unknown plugins,
-missing KOS toolchain, bad BIOS path); Dreamcast CI with pinned KOS;
-MIT OpenBIOS blob with SHA-512 check; host tests with sanitizer-capable
-compiler fallback and C-aware function extraction.

@@ -5,7 +5,11 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: pcercuei/dreamcast-toolchain:15.0.0-lra
+    # Pinned by digest: the :15.0.0-lra tag is mutable and has already been
+    # rebuilt from GCC 15 to GCC 17.0.0 (20260630). A floating compiler
+    # silently changes which workarounds apply, such as the -ffp-contract=off
+    # guard CMakeLists.txt limits to GCC < 16 for src/background.cpp.
+    container: pcercuei/dreamcast-toolchain@sha256:0de7d87311717225021374f1afc0f69c6efa4df64f9e31efc415083b3e458d15
 
     steps:
     - uses: actions/checkout@v6

@@ -108,7 +108,9 @@ You need current KallistiOS and a matching Dreamcast toolchain. GCC 15.1
 builds with the default register allocator; CMake enables LRA only for
 Lightrec's atomics and disables FMA contraction for the menu background.
 Enabling `-mlra` globally with GCC 15.1 causes compiler failures in the
-graphics code. Uploading with dc-tool also needs current dc-tool and dc-load.
+graphics code. The toolchain image the `dreamcast` workflow pins by digest now
+ships GCC 17, where the FMA workaround no longer applies (CMake limits it to
+GCC < 16). Uploading with dc-tool also needs current dc-tool and dc-load.
 
 Configure with `kos-cmake` after sourcing KallistiOS `environ.sh`. CMake
 refuses unknown `GPU_PLUGIN` / `SPU_PLUGIN` values, missing toolchain
@@ -120,7 +122,8 @@ or BIOS file changes.
 See [the Docker toolchain notes](docs/docker-dreamcast.md) for the installed
 development environment and reproducible build commands.
 
-Required kos-ports: **Parallax** and **Tsunami** (menu).
+Required kos-ports: **Tsunami** (menu), which pulls in **Parallax**, libpng,
+libjpeg, libkmg, and zlib.
 
 ```sh
 cd /path/to/bloom
