@@ -98,6 +98,9 @@ Almost every user-facing setting is compile-time only.
 1. Add an Options screen with real toggles for renderer (PVR/Unai), 480p,
    hybrid rendering, and SPU backend, persisted to `/sd` or `/ide` when
    present, otherwise VMU/VMU-incompatible `/ram`.
+   **Partly done:** Settings persist last folder, AICA vs silent output,
+   rumble, analog, 480p, and bilinear. PVR vs Unai and hybrid/FSAA/clipping
+   still need a rebuild.
 2. In-game pause: START combo or a dedicated chord that does not eat PS1
    Start. From there: resume, reset, swap disc, save/load state, quit to
    menu.
@@ -167,11 +170,13 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
   lengths, save-block indices, and icon counts are bounded
 - Menu chrome: title, location, hints, smear shadows, left-aligned
   browser, volume names, paging with L/R, wrap-around, last folder
+- Settings screen: AICA vs silent SPU output, rumble, analog, 480p, bilinear,
+  last folder; saved to `/sd`, `/ide`, or `/ram`
 - Checking a disc paints a status line for a frame before `CheckCdrom()`
 - Plugin open failures name CD-ROM vs audio vs GPU and close what opened
 - Host regression checks cover audio buffering and VMU loading/metadata;
-  all six sanitizer suites pass in Docker, including PVR display blanking,
-  texture-cache update boundaries, and menu path/error helpers
+  all seven sanitizer suites pass in Docker, including PVR display blanking,
+  texture-cache update boundaries, menu path/error helpers, and settings
 - Full Dreamcast build passes with GCC 15.1 and current KOS; compiler
   workarounds and the installed SDK are documented in `docs/docker-dreamcast.md`
 - Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;

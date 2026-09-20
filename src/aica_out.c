@@ -14,6 +14,7 @@
 #include <dc/sound/stream.h>
 
 #include "out.h"
+#include "settings.h"
 #include "spu_config.h"
 
 /* Per-channel AICA buffer. 8 KiB of S16 holds ~93 ms at 44100 Hz.
@@ -110,6 +111,9 @@ static void aica_finish(void);
 
 static int aica_init(void)
 {
+	if (bloom_want_silent_audio())
+		return -1;
+
 	if (stream_initialized)
 		return 0;
 

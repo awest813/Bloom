@@ -1,6 +1,8 @@
 /* Exercise the complete production driver and dfsound output selection. */
 #include <assert.h>
 #include <stdlib.h>
+static int force_silent;
+int bloom_want_silent_audio(void) { return force_silent; }
 #include "src/aica_out.c"
 #define HAVE_AICA
 #include "deps/pcsx_rearmed/plugins/dfsound/out.c"
@@ -133,5 +135,13 @@ int main(void)
     assert(starts == 2 && memcmp(played, input, sizeof(played)) == 0);
     out_current->finish();
     assert(shutdowns == 4 && destroys == 2);
+
+    force_silent = 1;
+    {
+        int inits = init_calls;
+        SetupSound();
+        assert(strcmp(out_current->name, "none") == 0);
+        assert(init_calls == inits);
+    }
     return 0;
 }

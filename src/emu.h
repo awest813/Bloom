@@ -16,8 +16,9 @@ __BEGIN_DECLS
 #define likely(x) __predict_true(!!(x))
 #define unlikely(x) __predict_false(!!(x))
 
-#define SCREEN_WIDTH	((WITH_480P ? 640 : 320) << WITH_FSAA)
-#define SCREEN_HEIGHT	(WITH_480P ? 480 : 240)
+extern unsigned int screen_width, screen_height;
+#define SCREEN_WIDTH	screen_width
+#define SCREEN_HEIGHT	screen_height
 
 struct maple_device;
 
@@ -43,6 +44,9 @@ void mcd_fs_hotplug_vmu(struct maple_device *dev);
 
 void input_init(void);
 void input_shutdown(void);
+void input_apply_settings(void);
+
+void emu_apply_video_settings(void);
 
 _Bool load_bios(int fd);
 

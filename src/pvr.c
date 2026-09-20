@@ -22,6 +22,7 @@
 #include "bloom-config.h"
 #include "emu.h"
 #include "pvr.h"
+#include "settings.h"
 
 #if ENABLE_THREADED_RENDERER
 #include "../deps/pcsx_rearmed/plugins/gpulib/gpulib_thread_if.h"
@@ -453,6 +454,9 @@ void pvr_renderer_init(void)
 	pvr.start_y = 0;
 	pvr.win_mask_x = 255;
 	pvr.win_mask_y = 255;
+
+	poly_textured.m2.filter_mode = bloom_settings_bilinear()
+		? PVR_FILTER_BILINEAR : PVR_FILTER_NONE;
 
 	if (!WITH_24BPP) {
 		pvr.fake_tex = pvr_mem_malloc(sizeof(fake_tex_data));

@@ -31,11 +31,12 @@ extern "C" {
 #include "genmenu.h"
 #include "menu_util.h"
 #include "revision.h"
+#include "settings.h"
 
 #define SCREEN_W 640
 #define TITLE_Y 32
 #define SUBTITLE_Y 58
-#define MAIN_LIST_Y 148
+#define MAIN_LIST_Y 128
 #define LIST_Y 92
 #define LIST_BOTTOM 400
 #define STATUS_Y 418
@@ -178,6 +179,47 @@ void TextLabel::cancel()
 	myMenu->preparePopulate("/rd/credits", true, false);
 }
 
+ToggleLabel::ToggleLabel(std::shared_ptr<Font> fh, enum bloom_setting_id id, int size)
+	: MyLabel(fh, "", size, false,
+		  Color(1.0f, 1.0f, 0.95f, 0.7f),
+		  Color(1.0f, 0.7f, 0.7f, 0.7f)),
+	  m_id(id)
+{
+	char buf[80];
+
+	bloom_settings_line(id, buf, sizeof(buf));
+	m_label = buf;
+	setText(m_label);
+}
+
+void ToggleLabel::activate()
+{
+	char buf[80];
+
+	if (!bloom_settings_cycle(m_id)) {
+		myMenu->showError("This build cannot change that option");
+		return;
+	}
+
+	bloom_settings_line(m_id, buf, sizeof(buf));
+	m_label = buf;
+	setText(m_label);
+	input_apply_settings();
+	if (bloom_settings_save() == 0) {
+		const char *path = bloom_settings_path();
+		myMenu->showStatus(path[0] ? (std::string("Saved ") + path)
+					   : "Settings saved");
+	} else {
+		myMenu->showError("Could not save settings");
+	}
+}
+
+void ToggleLabel::cancel()
+{
+	myMenu->persistBrowsePath();
+	myMenu->preparePopulate(fs::path(TOP_PATH), true, true);
+}
+
 void InfoLabel::activate()
 {
 	/* No action for activate on info text */
@@ -283,6 +325,11 @@ void MyMenu::populate_dft()
 		preparePopulate(last_browse, false, false);
 	}));
 
+	addEntry(std::make_shared<MainMenuLabel>(m_font, "Settings", m_font_size,
+						 [&] {
+		prepareSettings();
+	}));
+
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Build info", m_font_size,
 						 [&] {
 		prepareOptions();
@@ -310,6 +357,7 @@ void MyMenu::populate_dft()
 	m_path = TOP_PATH;
 	clearError();
 	setChrome("PlayStation emulator", "A Select");
+	persistBrowsePath();
 }
 
 void MyMenu::populate(fs::path path, bool back, const std::string &select_name)
@@ -410,8 +458,10 @@ void MyMenu::populate(fs::path path, bool back, const std::string &select_name)
 	fs_close(fd);
 
 	m_path = path;
-	if (!is_credits && path != "/rd")
+	if (!is_credits && path != "/rd") {
 		last_browse = path;
+		bloom_settings_set_last_path(path.c_str());
+	}
 	m_cursel = 0;
 	m_input_allowed = true;
 	clearError();
@@ -590,6 +640,81 @@ void MyMenu::populateOptions()
 	setChrome("Build info", "B Back   D-pad Scroll");
 }
 
+void MyMenu::persistBrowsePath()
+{
+	std::string path = last_browse.string();
+
+	if (path.empty() || path == "/rd" || path.rfind("/rd/", 0) == 0)
+		return;
+	bloom_settings_set_last_path(path.c_str());
+	bloom_settings_save();
+}
+
+void MyMenu::prepareSettings()
+{
+	auto anim = std::make_shared<AnimFadeAway>(false, -1.0f,
+						   -800.0f, [=, this] {
+		populateSettings();
+	});
+
+	m_top_scene->animRemoveAll();
+	m_top_scene->animAdd(anim);
+	m_input_allowed = false;
+}
+
+void MyMenu::populateSettings()
+{
+	std::shared_ptr<AnimFadeIn> anim;
+	const char *cfg = bloom_settings_path();
+	auto add_info = [&](const std::string &line) {
+		addEntry(std::make_shared<InfoLabel>(m_font, line, CREDITS_ENTRY_SIZE));
+	};
+
+	m_font_size = CREDITS_ENTRY_SIZE;
+	m_xoffset = 36;
+	m_list_y = LIST_Y;
+
+	m_entries.clear();
+	m_top_scene->animRemoveAll();
+	m_top_scene->subRemoveAll();
+	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
+
+	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
+			: "Saved to /sd, /ide, or /ram when possible");
+	add_info("A toggles. Applies on the next game launch.");
+	add_info("");
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_SILENT_AUDIO,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_RUMBLE,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_ANALOG,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_VIDEO_480P,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_BILINEAR,
+					       CREDITS_ENTRY_SIZE));
+	add_info("");
+	add_info(std::string("GPU plugin     ") + GPU_PLUGIN +
+		 "  (rebuild to change)");
+	add_info(std::string("SPU mix        ") + SPU_PLUGIN +
+		 "  (rebuild to change)");
+	add_info(std::string("Hybrid         ") +
+		 (WITH_HYBRID_RENDERING ? "on" : "off") +
+		 "   FSAA " + (WITH_FSAA ? "on" : "off") +
+		 "   24-bit " + (WITH_24BPP ? "on" : "off"));
+	add_info("Clipping, CHD, IDE, and SD stay compile-time.");
+
+	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
+		m_top_scene->animRemoveAll();
+	});
+	m_top_scene->animAdd(anim);
+
+	m_input_allowed = true;
+	m_cursel = 0;
+	clearError();
+	setChrome("Settings", "A Toggle   B Back");
+}
+
 void MyMenu::showError(const std::string &msg)
 {
 	if (m_status) {
@@ -635,6 +760,7 @@ void MyMenu::visualPerFrame()
 			showStatus(std::string("Starting ") + CdromId);
 		else
 			clearError();
+		persistBrowsePath();
 		startExit();
 	} else {
 		showError(emu_last_cd_error());
@@ -804,6 +930,10 @@ void AnimFadeIn::nextFrame(Drawable *t) {
 extern "C" bool runMenu(void)
 {
 	bool exited;
+	const char *saved = bloom_settings_get()->last_path;
+
+	if (saved[0])
+		last_browse = saved;
 
 	// Load a font
 	auto fnt = std::make_shared<Font>("/rd/typewriter.txf");

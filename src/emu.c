@@ -31,6 +31,7 @@
 #include "emu.h"
 #include "menu_util.h"
 #include "pvr.h"
+#include "settings.h"
 
 int fs_fat_init(void);
 void fs_fat_shutdown(void);
@@ -40,6 +41,16 @@ static bool is_exe;
 extern uint32_t _arch_mem_top;
 
 bool started;
+unsigned int screen_width = (WITH_480P ? 640 : 320) << WITH_FSAA;
+unsigned int screen_height = WITH_480P ? 480 : 240;
+
+void emu_apply_video_settings(void)
+{
+	int p480 = bloom_settings_video_480p();
+
+	screen_width = (unsigned int)((p480 ? 640 : 320) << WITH_FSAA);
+	screen_height = p480 ? 480 : 240;
+}
 
 void SysPrintf(const char *fmt, ...) {
 	va_list list;
@@ -190,6 +201,11 @@ int main(int argc, char **argv)
 	if (WITH_SDCARD)
 		sdcard_init();
 
+	bloom_settings_init(WITH_480P, WITH_BILINEAR,
+			    strcmp(SPU_PLUGIN, "Null") == 0, WITH_480P,
+			    strcmp(SPU_PLUGIN, "AICA") == 0);
+	emu_apply_video_settings();
+
 	input_init();
 
 	init_config();
@@ -230,7 +246,9 @@ int main(int argc, char **argv)
 				break;
 		}
 
-		if (WITH_480P)
+		emu_apply_video_settings();
+
+		if (bloom_settings_video_480p())
 			video_mode = DM_640x480;
 		else
 			video_mode = DM_320x240;

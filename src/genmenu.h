@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "settings.h"
+
 namespace fs = std::filesystem;
 
 typedef std::function<void(void)> Action;
@@ -132,6 +134,19 @@ private:
 	Action m_action;
 };
 
+class ToggleLabel : public MyLabel {
+public:
+	ToggleLabel(std::shared_ptr<Font> fh, enum bloom_setting_id id, int size);
+
+	~ToggleLabel() {}
+
+	virtual void activate();
+	virtual void cancel();
+
+private:
+	enum bloom_setting_id m_id;
+};
+
 class MyMenu : public GenericMenu {
 public:
 	MyMenu(std::shared_ptr<Font> fnt, const fs::path &path);
@@ -142,10 +157,13 @@ public:
 	void populate(fs::path path, bool back, const std::string &select_name = std::string());
 	void populateCredits(fs::path path);
 	void populateOptions();
+	void populateSettings();
 
 	void preparePopulate(fs::path path, bool back, bool dft);
 	void prepareCredits(fs::path path);
 	void prepareOptions();
+	void prepareSettings();
+	void persistBrowsePath();
 	void requestLoad(const char *path, const char *busy_msg);
 
 	void showError(const std::string &msg);

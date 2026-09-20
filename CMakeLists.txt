@@ -299,6 +299,7 @@ add_executable(bloom
 	src/mmap.c
 	src/platform.c
 	src/plugins.c
+	src/settings.c
 )
 # GCC can fail register allocation when contracting background arithmetic
 # into FMA instructions alongside its fixed SH-4 floating-point registers.

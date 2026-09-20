@@ -17,6 +17,9 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "emu.h"
+#include "settings.h"
+
 /* Scale factor of analog sticks / 128.
  * sqrtf(128^2 + 128^2) == ~181.02f */
 #define SCALE_FACTOR 181
@@ -44,7 +47,8 @@ static void emu_attach_cont_cb(maple_device_t *dev, void *)
 		printf("Plugged a standard controller in port %u\n", dev->port);
 	}
 
-	in_type[dev->port] = PSE_PAD_TYPE_ANALOGPAD;
+	in_type[dev->port] = bloom_settings_analog()
+		? PSE_PAD_TYPE_ANALOGPAD : PSE_PAD_TYPE_STANDARD;
 
 	if (dev->port > 1) {
 		/* Plugged in port C/D - enable multitap */
@@ -94,6 +98,19 @@ void input_init(void) {
 		dev = maple_enum_type(i, MAPLE_FUNC_MOUSE);
 		if (dev)
 			emu_attach_mouse_cb(dev, NULL);
+	}
+}
+
+void input_apply_settings(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < 8; i++) {
+		if (in_type[i] == PSE_PAD_TYPE_ANALOGPAD
+		    || in_type[i] == PSE_PAD_TYPE_STANDARD) {
+			in_type[i] = bloom_settings_analog()
+				? PSE_PAD_TYPE_ANALOGPAD : PSE_PAD_TYPE_STANDARD;
+		}
 	}
 }
 
@@ -273,6 +290,9 @@ long PAD2_readPort(PadDataS *pad) {
 void plat_trigger_vibrate(int pad, int low, int high) {
 	maple_device_t *dev;
 	unsigned int i;
+
+	if (!bloom_settings_rumble())
+		return;
 
 	for (i = 0; i < MAPLE_UNIT_COUNT; i++) {
 		dev = maple_enum_dev(pad, i);

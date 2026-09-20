@@ -25,7 +25,7 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 | Audio | dfsound mix streamed to the AICA (voices, XA, CDDA; reverb off) |
 | Input | DualShock-style pad, analog, mouse, rumble |
 | Saves | VMU memory cards; optional savestate load at boot |
-| UX | File browser (last folder, paging, load status), credits, read-only Build info; no in-game pause |
+| UX | Menu with Settings (persisted), last folder, load status; read-only Build info; no in-game pause |
 
 ## Features
 
@@ -67,7 +67,11 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 ## Known limitations
 
 - **PVR still glitches** on some effects (hybrid rendering, remaining GPU holes). Use Unai when a title needs accurate drawing.
-- **No in-game pause**, disc-swap UI, or savestate UI. Build info shows compile-time flags and controls, not live toggles. The file browser remembers the last folder for the session and shows a status line while `CheckCdrom()` runs.
+- **No in-game pause**, disc-swap UI, or savestate UI. Settings persist audio
+  output, rumble, analog, 480p, bilinear, and the last browse folder to
+  `/sd/bloom.cfg`, `/ide/bloom.cfg`, or `/ram/bloom.cfg`. GPU plugin, hybrid
+  rendering, FSAA, and clipping stay compile-time. Build info remains a
+  read-only summary.
 - **3D is often far from full speed** (community reports around 30 fps 2D / 10 fps 3D).
 - **Audio has no reverb** yet. If the AICA stream fails to start, dfsound falls back to silent output; IRQs still fire.
 - Light gun and keyboard-as-controller are stubs.
@@ -176,7 +180,8 @@ docker run --rm -v "$PWD:/workspace:ro" bloom-tests
 ```
 
 These checks compile the complete production audio driver and dfsound output
-selection, the VMU metadata/loading routines, and the menu path/error helpers,
+selection, the VMU metadata/loading routines, the menu path/error helpers,
+and settings parse/cycle,
 with hardware calls stubbed out and address/undefined-behavior sanitizers
 enabled. They cover audio startup, failure cleanup, silent fallback, reopening,
 stereo ordering across overflow and wrapping, silent underruns, bounded save

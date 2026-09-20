@@ -259,6 +259,65 @@ int main(void) {
 }
 ''', extra_sources=[ROOT / "src/menu_util.c"])
 
+    def test_settings_parse_cycle_and_paths(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "settings.h"
+
+static const char *readable;
+
+static int is_readable(const char *path) {
+    return readable && strcmp(path, readable) == 0;
+}
+
+int main(void) {
+    struct bloom_settings s;
+    char line[80];
+    const char *paths[] = { "/sd/bloom.cfg", "/ide/bloom.cfg", "/ram/bloom.cfg" };
+    FILE *fp = tmpfile();
+    char buf[256];
+
+    bloom_settings_reset(&s, 1, 0, 0, 1, 1);
+    assert(s.rumble && s.analog && s.video_480p && !s.bilinear && !s.silent_audio);
+    assert(bloom_settings_parse_line(&s, "last_path=/sd/games"));
+    assert(bloom_settings_parse_line(&s, " silent_audio = on "));
+    assert(bloom_settings_parse_line(&s, "# comment") == 0);
+    assert(s.silent_audio);
+    assert(strcmp(s.last_path, "/sd/games") == 0);
+    assert(bloom_settings_write_to(&s, fp) == 0);
+    rewind(fp);
+    bloom_settings_reset(&s, 1, 0, 0, 1, 1);
+    assert(bloom_settings_load_from(&s, fp) >= 4);
+    assert(s.silent_audio && strcmp(s.last_path, "/sd/games") == 0);
+    fclose(fp);
+
+    bloom_settings_init(1, 0, 0, 1, 1);
+    bloom_settings_set_last_path("/ide/iso");
+    assert(bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
+    assert(bloom_want_silent_audio());
+    bloom_settings_line(BLOOM_SET_SILENT_AUDIO, line, sizeof(line));
+    assert(strstr(line, "Silent"));
+    assert(bloom_settings_cycle(BLOOM_SET_RUMBLE));
+    assert(!bloom_settings_rumble());
+
+    bloom_settings_init(0, 0, 1, 0, 0);
+    assert(bloom_want_silent_audio());
+    assert(!bloom_settings_video_480p());
+    assert(!bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
+    assert(!bloom_settings_cycle(BLOOM_SET_VIDEO_480P));
+
+    readable = "/ide/bloom.cfg";
+    assert(strcmp(bloom_settings_choose_path(is_readable, paths, 3),
+                  "/ide/bloom.cfg") == 0);
+    readable = NULL;
+    assert(bloom_settings_choose_path(is_readable, paths, 3) == NULL);
+    (void)buf;
+    return 0;
+}
+''', extra_sources=[ROOT / "src/settings.c"])
+
 
 if __name__ == "__main__":
     unittest.main()
