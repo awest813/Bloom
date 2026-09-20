@@ -142,6 +142,7 @@ Menu/Settings: persisted `bloom.cfg`; last folder; named plugin errors;
 locked options as “this build”; wrap/page; rumble/analog immediate; empty
 device copy; status tint reset; PT/TR and horizontal-FSAA labels.
 
-Build: GCC 15.1 LRA only on Lightrec; CMake fail-fast; Dreamcast CI with
-pinned KOS; MIT OpenBIOS blob with SHA-512 check; host tests with
-sanitizer-capable compiler fallback and C-aware function extraction.
+Build: GCC 15.1 LRA only on Lightrec; CMake fail-fast (unknown plugins,
+missing KOS toolchain, bad BIOS path); Dreamcast CI with pinned KOS;
+MIT OpenBIOS blob with SHA-512 check; host tests with sanitizer-capable
+compiler fallback and C-aware function extraction.

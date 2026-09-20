@@ -6,6 +6,12 @@ project(bloom VERSION 0.1 LANGUAGES C CXX ASM)
 include(kallistios)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if ("$ENV{KOS_CC}" STREQUAL "" OR "$ENV{KOS_STRIP}" STREQUAL "")
+	message(FATAL_ERROR
+		"KOS_CC/KOS_STRIP are not set. Source KallistiOS environ.sh and configure with kos-cmake.")
+endif()
 
 if (NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Type of build" FORCE)
@@ -15,20 +21,21 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 
 include(FindGit OPTIONAL)
+set(BLOOM_VERSION bloom)
 if (GIT_FOUND)
 	execute_process(
 		COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
 		WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 		OUTPUT_VARIABLE BLOOM_VERSION_GIT
 		OUTPUT_STRIP_TRAILING_WHITESPACE
+		RESULT_VARIABLE BLOOM_GIT_REV
 	)
-
-	set(BLOOM_VERSION bloom-g${BLOOM_VERSION_GIT})
-else()
-	set(BLOOM_VERSION bloom)
+	if (BLOOM_GIT_REV EQUAL 0 AND BLOOM_VERSION_GIT)
+		set(BLOOM_VERSION bloom-g${BLOOM_VERSION_GIT})
+	endif()
 endif()
 
-file(GENERATE OUTPUT revision.h CONTENT "#define REV \"${BLOOM_VERSION}\"\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/revision.h "#define REV \"${BLOOM_VERSION}\"\n")
 
 option(WITH_GDB "Enable support for GDB" OFF)
 
@@ -124,10 +131,10 @@ if (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND
 endif()
 
 set(CODE_BUFFER_SIZE_MB 3 CACHE STRING "Code buffer size in MiB")
-math(EXPR CODEBUF_SIZE "0x100000 * ${CODE_BUFFER_SIZE_MB}")
-if (NOT CODEBUF_SIZE)
-	message(SEND_ERROR "Invalid buffer size.")
+if (NOT CODE_BUFFER_SIZE_MB MATCHES "^[1-9][0-9]*$")
+	message(FATAL_ERROR "CODE_BUFFER_SIZE_MB must be a positive integer (got '${CODE_BUFFER_SIZE_MB}')")
 endif()
+math(EXPR CODEBUF_SIZE "0x100000 * ${CODE_BUFFER_SIZE_MB}")
 
 set(WITH_GPUSTATUS_POLLING_THRESHOLD 350 CACHE STRING
 	"Threshold in CPU cycles for GPU status register polling detection (0 = disabled)"
@@ -192,12 +199,8 @@ target_compile_definitions(libpcsxcore PUBLIC
 target_compile_options(libpcsxcore PRIVATE -Wno-format)
 target_link_libraries(libpcsxcore PUBLIC lightrec zlib)
 
-if (NOT GPU_PLUGIN)
-	set(GPU_PLUGIN PVR CACHE STRING "GPU plugin" FORCE)
-	set_property(CACHE GPU_PLUGIN PROPERTY
-		STRINGS Unai PVR
-	)
-endif()
+set(GPU_PLUGIN PVR CACHE STRING "GPU plugin")
+set_property(CACHE GPU_PLUGIN PROPERTY STRINGS Unai PVR)
 
 if (GPU_PLUGIN STREQUAL Unai)
 	add_library(gpu STATIC
@@ -215,7 +218,10 @@ elseif(GPU_PLUGIN STREQUAL PVR)
 		src/pvr.c
 	)
 	target_include_directories(gpu PRIVATE ${PCSX_REAL_DIR}/plugins)
+	target_link_libraries(gpu PUBLIC libpcsxcore)
 	set(HARDWARE_ACCELERATED ON)
+else()
+	message(FATAL_ERROR "GPU_PLUGIN must be Unai or PVR (got '${GPU_PLUGIN}')")
 endif()
 
 option(ENABLE_THREADED_RENDERER "Threaded renderer" OFF)
@@ -244,46 +250,37 @@ option(WITH_CLIPPING "Enable pixel clipping" ON)
 
 if (WITH_HYBRID_RENDERING)
 	set(WITH_POLYBUF_SIZE_KB 128 CACHE STRING "Poly buffer size for hybrid rendering, in KiB")
-	math(EXPR POLY_BUFFER_SIZE "0x400 * ${WITH_POLYBUF_SIZE_KB}")
-	if (NOT POLY_BUFFER_SIZE)
-		message(SEND_ERROR "Invalid poly buffer size.")
+	if (NOT WITH_POLYBUF_SIZE_KB MATCHES "^[1-9][0-9]*$")
+		message(FATAL_ERROR "WITH_POLYBUF_SIZE_KB must be a positive integer (got '${WITH_POLYBUF_SIZE_KB}')")
 	endif()
+	math(EXPR POLY_BUFFER_SIZE "0x400 * ${WITH_POLYBUF_SIZE_KB}")
 else()
 	set(POLY_BUFFER_SIZE 0) # the buffer will be discarded anyway
 endif()
 
 target_compile_definitions(gpu PRIVATE POLY_BUFFER_SIZE=${POLY_BUFFER_SIZE})
 
-if (NOT SPU_PLUGIN)
-	set(SPU_PLUGIN AICA CACHE STRING "SPU plugin" FORCE)
-	set_property(CACHE SPU_PLUGIN PROPERTY
-		STRINGS Null AICA
-	)
-endif()
+set(SPU_PLUGIN AICA CACHE STRING "SPU plugin")
+set_property(CACHE SPU_PLUGIN PROPERTY STRINGS Null AICA)
 
+set(DFSOUND_SOURCES
+	${PCSX_REAL_DIR}/plugins/dfsound/dma.c
+	${PCSX_REAL_DIR}/plugins/dfsound/freeze.c
+	${PCSX_REAL_DIR}/plugins/dfsound/registers.c
+	${PCSX_REAL_DIR}/plugins/dfsound/spu.c
+	${PCSX_REAL_DIR}/plugins/dfsound/out.c
+	${PCSX_REAL_DIR}/plugins/dfsound/nullsnd.c
+)
 if (SPU_PLUGIN STREQUAL Null)
-	add_library(spu STATIC
-		${PCSX_REAL_DIR}/plugins/dfsound/dma.c
-		${PCSX_REAL_DIR}/plugins/dfsound/freeze.c
-		${PCSX_REAL_DIR}/plugins/dfsound/registers.c
-		${PCSX_REAL_DIR}/plugins/dfsound/spu.c
-		${PCSX_REAL_DIR}/plugins/dfsound/out.c
-		${PCSX_REAL_DIR}/plugins/dfsound/nullsnd.c
-	)
+	add_library(spu STATIC ${DFSOUND_SOURCES})
 elseif(SPU_PLUGIN STREQUAL AICA)
 	# dfsound mix (voices, XA, CDDA, IRQs) with AICA streaming output.
 	# nullsnd stays as a silent fallback if the stream cannot start.
-	add_library(spu STATIC
-		${PCSX_REAL_DIR}/plugins/dfsound/dma.c
-		${PCSX_REAL_DIR}/plugins/dfsound/freeze.c
-		${PCSX_REAL_DIR}/plugins/dfsound/registers.c
-		${PCSX_REAL_DIR}/plugins/dfsound/spu.c
-		${PCSX_REAL_DIR}/plugins/dfsound/out.c
-		${PCSX_REAL_DIR}/plugins/dfsound/nullsnd.c
-		src/aica_out.c
-	)
+	add_library(spu STATIC ${DFSOUND_SOURCES} src/aica_out.c)
 	target_compile_definitions(spu PRIVATE HAVE_AICA)
 	target_include_directories(spu PRIVATE ${PCSX_REAL_DIR}/plugins/dfsound)
+else()
+	message(FATAL_ERROR "SPU_PLUGIN must be Null or AICA (got '${SPU_PLUGIN}')")
 endif()
 
 add_executable(bloom
@@ -307,13 +304,13 @@ add_executable(bloom
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
 	set_source_files_properties(src/background.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif()
-target_link_libraries(bloom PUBLIC libpcsxcore gpu spu tsunami
-	#lightning lightrec libpcsxcore gpu spu
-	#${ZLIB_LIBRARIES} tsunami parallax
-)
+target_link_libraries(bloom PUBLIC libpcsxcore gpu spu tsunami)
 
 option(WITH_CDROM_DMA "Read CD-ROM sectors using DMA" ON)
 set(WITH_CDROM_CACHE_SIZE 16 CACHE STRING "CD-ROM cache size in sectors")
+if (NOT WITH_CDROM_CACHE_SIZE MATCHES "^[1-9][0-9]*$")
+	message(FATAL_ERROR "WITH_CDROM_CACHE_SIZE must be a positive integer (got '${WITH_CDROM_CACHE_SIZE}')")
+endif()
 
 option(WITH_SDCARD "Enable SD cards support" ON)
 if (WITH_SDCARD)
@@ -402,16 +399,35 @@ if (WITH_CHD)
 	target_link_libraries(libpcsxcore PUBLIC libchdr)
 endif(WITH_CHD)
 
+set(_bloom_default_bios "${CMAKE_SOURCE_DIR}/openbios/openbios.bin")
+if (NOT EXISTS "${_bloom_default_bios}")
+	set(_bloom_default_bios "")
+endif()
 set(WITH_EMBEDDED_BIOS_PATH
-	"${CMAKE_SOURCE_DIR}/openbios/openbios.bin"
-	CACHE PATH "Path to an optional BIOS file to pack"
+	"${_bloom_default_bios}"
+	CACHE PATH "Path to an optional BIOS file to pack; empty skips embedding"
 )
+unset(_bloom_default_bios)
 
 if (WITH_EMBEDDED_BIOS_PATH)
-	add_custom_command(TARGET bloom POST_BUILD
+	if (NOT EXISTS "${WITH_EMBEDDED_BIOS_PATH}")
+		message(FATAL_ERROR
+			"WITH_EMBEDDED_BIOS_PATH is set to '${WITH_EMBEDDED_BIOS_PATH}', which does not exist. "
+			"Place an OpenBIOS image there, pass a real path, or configure with -DWITH_EMBEDDED_BIOS_PATH= to skip packing.")
+	endif()
+	add_custom_command(
+		OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/.bios-embedded
 		COMMAND ${CMAKE_SOURCE_DIR}/openbios/insert_bios.sh
-		ARGS ${WITH_EMBEDDED_BIOS_PATH} $<TARGET_FILE:bloom>
+			${WITH_EMBEDDED_BIOS_PATH} $<TARGET_FILE:bloom>
+		COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/.bios-embedded
+		DEPENDS
+			bloom
+			${WITH_EMBEDDED_BIOS_PATH}
+			${CMAKE_SOURCE_DIR}/openbios/insert_bios.sh
+		COMMENT "Embedding BIOS into bloom.elf"
+		VERBATIM
 	)
+	add_custom_target(embed-bios ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/.bios-embedded)
 endif()
 
 set(WITH_BIOS_PATH "" CACHE PATH "Runtime path to the (optional) BIOS file")
@@ -458,11 +474,29 @@ file(WRITE ${CMAKE_BINARY_DIR}/dummy.c "")
 execute_process(
 	COMMAND $ENV{KOS_CC} ${CMAKE_BINARY_DIR}/dummy.c -c
 		-o ${CMAKE_BINARY_DIR}/romdisk/dummy.elf
+	RESULT_VARIABLE BLOOM_DUMMY_CC
 )
+if (BLOOM_DUMMY_CC)
+	message(FATAL_ERROR "Failed to compile romdisk dummy.elf with KOS_CC=$ENV{KOS_CC}")
+endif()
 execute_process(
 	COMMAND $ENV{KOS_STRIP} ${CMAKE_BINARY_DIR}/romdisk/dummy.elf
+	RESULT_VARIABLE BLOOM_DUMMY_STRIP
 )
+if (BLOOM_DUMMY_STRIP)
+	message(FATAL_ERROR "Failed to strip romdisk dummy.elf with KOS_STRIP=$ENV{KOS_STRIP}")
+endif()
 
 kos_add_romdisk(bloom ${CMAKE_BINARY_DIR}/romdisk)
 
 configure_file(src/bloom-config.h.cmakein bloom-config.h @ONLY)
+
+message(STATUS "Bloom ${BLOOM_VERSION}: GPU_PLUGIN=${GPU_PLUGIN} SPU_PLUGIN=${SPU_PLUGIN} "
+	"CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+message(STATUS "  480p=${WITH_480P} hybrid=${WITH_HYBRID_RENDERING} bilinear=${WITH_BILINEAR} "
+	"clip=${WITH_CLIPPING} fsaa=${WITH_FSAA} 24bpp=${WITH_24BPP} CHD=${WITH_CHD}")
+if (WITH_EMBEDDED_BIOS_PATH)
+	message(STATUS "  embed BIOS=${WITH_EMBEDDED_BIOS_PATH}")
+else()
+	message(STATUS "  embed BIOS=off")
+endif()

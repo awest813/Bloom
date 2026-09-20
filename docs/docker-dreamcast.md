@@ -17,8 +17,11 @@ Installed versions:
 | kos-ports | `f4faacc42faaf552625777b7709e871a827e1055` |
 | mkdcdisc | `4d74e40dd2122e14389a305ed1d86dd024201389` |
 
+The GitHub `dreamcast` workflow uses the same KallistiOS and kos-ports
+revisions as this table. Unpinned KOS HEAD is not compatible with that
+kos-ports libjpeg (`uint16`).
+
 The compiler archive is the Linux AArch64 asset from
-[dreamcast-toolchain-builds GCC 15.1.0 / KOS 2.2.1](https://github.com/drpaneas/dreamcast-toolchain-builds/releases/tag/gcc15.1.0-kos2.2.1).
 Its verified SHA-256 is
 `cd80e020cc4969b1fd3c1b36522b2725c83f08b634b15e6cb17ab48194604235`.
 The archive's KOS and ports were replaced with the pinned revisions above;
@@ -51,6 +54,7 @@ docker exec bloom-gcc15 bash -lc '
   set -e
   kos-cmake -S /workspace -B /tmp/bloom-game \
     -DWITH_GAME_PATH=/cd/streetfighteralpha3.chd \
+    -DWITH_EMBEDDED_BIOS_PATH= \
     -DCMAKE_C_FLAGS= -DCMAKE_CXX_FLAGS=
   cmake --build /tmp/bloom-game -j4
   sh-elf-objcopy -O binary /tmp/bloom-game/bloom.elf /tmp/bloom-game/bloom.bin
