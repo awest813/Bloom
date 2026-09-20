@@ -5,6 +5,7 @@ Compile the full audio driver and extract the VMU/PVR routines so these checks n
 neither KOS headers nor a copy of the implementation. This is not a Dreamcast
 integration test.
 """
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -426,6 +427,12 @@ int main(void) {
     return 0;
 }
 ''', extra_sources=[ROOT / "src/settings.c", ROOT / "src/menu_util.c"])
+
+    def test_openbios_image_matches_published_checksum(self):
+        blob = (ROOT / "openbios/openbios.bin").read_bytes()
+        self.assertEqual(len(blob), 512 * 1024)
+        expected = (ROOT / "openbios/openbios.bin.sha512").read_text().split()[0]
+        self.assertEqual(hashlib.sha512(blob).hexdigest(), expected)
 
 
 if __name__ == "__main__":

@@ -38,7 +38,8 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 **BIOS and cards**
 
 - [OpenBIOS](https://pcsx-redux.consoledev.net/openbios/) is packed in by default
-- Official BIOS dumps can be used at runtime (`WITH_BIOS_PATH`) or embedded at build time
+- Official BIOS dumps can be used at runtime (`WITH_BIOS_PATH`) or packed at
+  build time (`WITH_EMBEDDED_BIOS_PATH`)
 - Memory cards as VMU files, or as images on IDE / SD
 
 **Graphics**
@@ -230,7 +231,7 @@ Bloom is built on:
 - [pcsx_rearmed](https://github.com/libretro/pcsx_rearmed)
 - [Lightrec](https://github.com/pcercuei/lightrec)
 - [GNU Lightning](https://www.gnu.org/software/lightning)
-- [OpenBIOS](https://pcsx-redux.consoledev.net/openbios/)
+- [OpenBIOS](https://pcsx-redux.consoledev.net/openbios/) (MIT; packed by default)
 
 Original Dreamcast port by [Paul Cercueil](https://github.com/pcercuei/bloom).
 
