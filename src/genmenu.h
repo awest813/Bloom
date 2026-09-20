@@ -31,6 +31,9 @@ public:
 	~MyLabel() {}
 
 	const std::string &getLabel() { return m_label; }
+	const std::string &getFsName() { return m_fs_name.empty() ? m_label : m_fs_name; }
+
+	void setFsName(const std::string &name) { m_fs_name = name; }
 
 	void select()
 	{
@@ -54,17 +57,20 @@ public:
 protected:
 	Color m_color_selected, m_color_deselected;
 	std::string m_label;
+	std::string m_fs_name;
 	std::shared_ptr<Font> m_font;
 	unsigned int m_size;
 };
 
 class PathLabel : public MyLabel {
 public:
-	PathLabel(std::shared_ptr<Font> fh, const std::string& text, bool is_file, int size)
-		: MyLabel(fh, text, size, true,
-			  is_file ? Color(1.0f, 0.7f, 0.7f, 1.0f) : Color(1.0f, 1.0f, 1.0f, 1.0f),
-			  is_file ? Color(1.0f, 0.3f, 0.3f, 1.0f) : Color(1.0f, 0.5f, 0.5f, 0.5f))
+	PathLabel(std::shared_ptr<Font> fh, const std::string& text, bool is_file, int size,
+		  const std::string& fs_name = std::string())
+		: MyLabel(fh, text, size, false,
+			  is_file ? Color(1.0f, 0.85f, 0.9f, 1.0f) : Color(1.0f, 1.0f, 1.0f, 1.0f),
+			  is_file ? Color(1.0f, 0.45f, 0.55f, 0.95f) : Color(1.0f, 0.62f, 0.62f, 0.62f))
 	{
+		setFsName(fs_name.empty() ? text : fs_name);
 	}
 
 	~PathLabel() {}
@@ -78,7 +84,7 @@ public:
 	TextLabel(std::shared_ptr<Font> fh, const std::string& text, int size)
 		: MyLabel(fh, text, size, false,
 			  Color(1.0f, 1.0f, 1.0f, 1.0f),
-			  Color(1.0f, 1.0f, 1.0f, 1.0f))
+			  Color(1.0f, 0.85f, 0.85f, 0.85f))
 	{
 	}
 
@@ -93,7 +99,7 @@ public:
 	InfoLabel(std::shared_ptr<Font> fh, const std::string& text, int size)
 		: MyLabel(fh, text, size, false,
 			  Color(1.0f, 1.0f, 1.0f, 1.0f),
-			  Color(1.0f, 1.0f, 1.0f, 1.0f))
+			  Color(1.0f, 0.85f, 0.85f, 0.85f))
 	{
 	}
 
@@ -109,7 +115,7 @@ public:
 		      const Action& action)
 		: MyLabel(fh, text, size, true,
 			  Color(1.0f, 1.0f, 1.0f, 1.0f),
-			  Color(1.0f, 0.5f, 0.5f, 0.5f)),
+			  Color(1.0f, 0.55f, 0.55f, 0.55f)),
 		m_action(action)
 	{
 	}
@@ -133,16 +139,19 @@ public:
 	virtual ~MyMenu() {}
 
 	void populate_dft();
-	void populate(fs::path path, bool back);
+	void populate(fs::path path, bool back, const std::string &select_name = std::string());
 	void populateCredits(fs::path path);
 	void populateOptions();
 
 	void preparePopulate(fs::path path, bool back, bool dft);
 	void prepareCredits(fs::path path);
 	void prepareOptions();
+	void requestLoad(const char *path, const char *busy_msg);
 
 	void showError(const std::string &msg);
+	void showStatus(const std::string &msg);
 	void clearError();
+	void setChrome(const std::string &location, const std::string &hint);
 
 	void setEntry(unsigned int entry);
 
@@ -158,7 +167,13 @@ public:
 
 	virtual void startExit();
 
+protected:
+	virtual void visualPerFrame();
+
 private:
+	unsigned int pageStep() const;
+	void moveSelection(int delta, bool wrap);
+
 	bool m_input_allowed;
 	Color m_color0, m_color1;
 	std::vector<std::shared_ptr<MyLabel> > m_entries;
@@ -166,10 +181,16 @@ private:
 	unsigned int m_cursel;
 	unsigned int m_font_size;
 	unsigned int m_xoffset;
+	unsigned int m_list_y;
 	std::shared_ptr<Font> m_font;
 	bool m_exited;
+	bool m_pending_load;
+	std::string m_pending_iso;
 	std::shared_ptr<Background> m_bg;
+	std::shared_ptr<Label> m_title;
+	std::shared_ptr<Label> m_location;
 	std::shared_ptr<Label> m_status;
+	std::shared_ptr<Label> m_hint;
 
 	std::shared_ptr<Scene> m_top_scene;
 };

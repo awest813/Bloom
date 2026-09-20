@@ -68,18 +68,23 @@ int main(void) {
             "/* Production functions are inserted here by test_regressions.py. */",
             production))
 
-    def compile_and_run(self, source):
+    def compile_and_run(self, source, extra_sources=None):
         with tempfile.TemporaryDirectory() as directory:
             source_path = Path(directory) / "check.c"
             binary = Path(directory) / "check"
             source_path.write_text(source)
-            subprocess.run([os.environ.get("CC", "clang"), "-std=gnu11",
-                            "-g", "-fsanitize=address,undefined",
-                            "-fno-sanitize-recover=all",
-                            "-I" + str(ROOT),
-                            "-I" + str(ROOT / "tests/stubs"),
-                            "-I" + str(ROOT / "deps/pcsx_rearmed/plugins/dfsound"),
-                            str(source_path), "-o", str(binary)], check=True)
+            command = [os.environ.get("CC", "clang"), "-std=gnu11",
+                       "-g", "-fsanitize=address,undefined",
+                       "-fno-sanitize-recover=all",
+                       "-I" + str(ROOT),
+                       "-I" + str(ROOT / "src"),
+                       "-I" + str(ROOT / "tests/stubs"),
+                       "-I" + str(ROOT / "deps/pcsx_rearmed/plugins/dfsound"),
+                       str(source_path)]
+            for extra in extra_sources or []:
+                command.append(str(extra))
+            command.extend(["-o", str(binary)])
+            subprocess.run(command, check=True)
             result = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -188,6 +193,71 @@ int main(void) {
     return 0;
 }
 ''')
+
+
+    def test_menu_helpers(self):
+        source = r'''
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "menu_util.h"
+'''
+        self.compile_and_run(source + r'''
+int main(void) {
+    char buf[64];
+
+    assert(menu_is_cd_image_ext(".CHD", true));
+    assert(!menu_is_cd_image_ext(".CHD", false));
+    assert(menu_is_cd_image_ext(".Bin", true));
+    assert(menu_is_cd_image_ext(".img", false));
+    assert(!menu_is_cd_image_ext(".txt", true));
+    assert(!menu_is_cd_image_ext("", true));
+
+    assert(menu_is_browser_root("cd"));
+    assert(menu_is_browser_root("sd"));
+    assert(!menu_is_browser_root("rd"));
+    assert(!menu_is_browser_root("credits"));
+    assert(strcmp(menu_volume_label("cd"), "CD-ROM") == 0);
+    assert(strcmp(menu_volume_label("ide"), "Hard drive") == 0);
+    assert(strcmp(menu_volume_label("other"), "other") == 0);
+
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_CDR), "Could not open CD-ROM") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_SPU), "Could not open audio") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_GPU), "Could not open GPU") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_NOT_PSX), "Not a PlayStation disc image") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_NO_DISC), "No PlayStation disc detected") == 0);
+
+    menu_truncate(buf, sizeof(buf), "short", 8);
+    assert(strcmp(buf, "short") == 0);
+    menu_truncate(buf, sizeof(buf), "abcdefghijk", 8);
+    assert(strcmp(buf, "abcde...") == 0);
+    menu_truncate(buf, 4, "abcdefghijk", 8);
+    assert(strlen(buf) < 4);
+
+    menu_format_location(buf, sizeof(buf), "/");
+    assert(strcmp(buf, "Select a device") == 0);
+    menu_format_location(buf, sizeof(buf), "/cd");
+    assert(strcmp(buf, "CD-ROM") == 0);
+    menu_format_location(buf, sizeof(buf), "/sd/games");
+    assert(strcmp(buf, "SD card / games") == 0);
+    menu_format_location(buf, sizeof(buf), "/ide/psx/iso");
+    assert(strcmp(buf, "Hard drive / psx/iso") == 0);
+
+    assert(menu_page_step(92, 400, 20) == 15);
+    assert(menu_page_step(92, 400, 0) == 1);
+    assert(menu_wrap_index(-1, 5) == 4);
+    assert(menu_wrap_index(5, 5) == 0);
+    assert(menu_wrap_index(2, 5) == 2);
+    assert(menu_clamp_index(-3, 5) == 0);
+    assert(menu_clamp_index(9, 5) == 4);
+    assert(menu_clamp_index(1, 0) == 0);
+
+    const char *names[] = {"cd", "sd", "game.bin"};
+    assert(menu_find_name(names, 3, "sd") == 1);
+    assert(menu_find_name(names, 3, "missing") == 0);
+    return 0;
+}
+''', extra_sources=[ROOT / "src/menu_util.c"])
 
 
 if __name__ == "__main__":

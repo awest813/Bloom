@@ -25,7 +25,7 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 | Audio | dfsound mix streamed to the AICA (voices, XA, CDDA; reverb off) |
 | Input | DualShock-style pad, analog, mouse, rumble |
 | Saves | VMU memory cards; optional savestate load at boot |
-| UX | File browser, credits, and read-only Build info; no in-game pause |
+| UX | File browser (last folder, paging, load status), credits, read-only Build info; no in-game pause |
 
 ## Features
 
@@ -67,7 +67,7 @@ It started as [pcercuei/bloom](https://github.com/pcercuei/bloom). See
 ## Known limitations
 
 - **PVR still glitches** on some effects (hybrid rendering, remaining GPU holes). Use Unai when a title needs accurate drawing.
-- **No in-game pause**, disc-swap UI, or savestate UI. Build info shows compile-time flags and controls, not live toggles.
+- **No in-game pause**, disc-swap UI, or savestate UI. Build info shows compile-time flags and controls, not live toggles. The file browser remembers the last folder for the session and shows a status line while `CheckCdrom()` runs.
 - **3D is often far from full speed** (community reports around 30 fps 2D / 10 fps 3D).
 - **Audio has no reverb** yet. If the AICA stream fails to start, dfsound falls back to silent output; IRQs still fire.
 - Light gun and keyboard-as-controller are stubs.
@@ -176,12 +176,13 @@ docker run --rm -v "$PWD:/workspace:ro" bloom-tests
 ```
 
 These checks compile the complete production audio driver and dfsound output
-selection, plus the VMU metadata/loading routines, with hardware calls stubbed
-out and address/undefined-behavior sanitizers enabled. They cover audio startup,
-failure cleanup, silent fallback, reopening, stereo ordering across overflow
-and wrapping, silent underruns, bounded save titles, invalid icon counts, unsupported VMU
-ports, missing files, and truncated saves. They do not replace a KallistiOS
-build or testing on Dreamcast hardware.
+selection, the VMU metadata/loading routines, and the menu path/error helpers,
+with hardware calls stubbed out and address/undefined-behavior sanitizers
+enabled. They cover audio startup, failure cleanup, silent fallback, reopening,
+stereo ordering across overflow and wrapping, silent underruns, bounded save
+titles, invalid icon counts, unsupported VMU ports, missing files, truncated
+saves, disc-image extensions, volume labels, and CD load error strings. They do
+not replace a KallistiOS build or testing on Dreamcast hardware.
 
 PVR regression coverage also checks that disabled scanout continues drawing
 sprites and lines into PSX VRAM without accumulating hardware polygons,

@@ -104,8 +104,14 @@ Almost every user-facing setting is compile-time only.
 3. Savestates as a first-class feature, not only `WITH_BOOT_SSTATE`.
 4. Disc-image browser: remember last directory; show a spinner while
    `CheckCdrom()` runs (it can stall on bad dumps).
+   **Done in this branch (session memory, not persisted to SD/IDE):** the
+   browser reopens the last folder, restores the previous highlight when
+   going up, and paints a "Checking…" status for one frame before
+   `CheckCdrom()`. A true spinner still needs a second thread.
 5. Surface plugin open failures in the menu (CD-ROM vs. GPU vs. SPU), not
    only "could not load."
+   **Done in this branch:** failed plugin opens unwind cleanly and the
+   status line names CD-ROM, audio, or GPU.
 
 ## Priority 4 — performance
 
@@ -159,9 +165,13 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
   with silence
 - VMU loading rejects unsupported ports and incomplete files; metadata title
   lengths, save-block indices, and icon counts are bounded
+- Menu chrome: title, location, hints, smear shadows, left-aligned
+  browser, volume names, paging with L/R, wrap-around, last folder
+- Checking a disc paints a status line for a frame before `CheckCdrom()`
+- Plugin open failures name CD-ROM vs audio vs GPU and close what opened
 - Host regression checks cover audio buffering and VMU loading/metadata;
-  all five sanitizer suites pass in Docker, including PVR display blanking
-  and texture-cache update boundaries
+  all six sanitizer suites pass in Docker, including PVR display blanking,
+  texture-cache update boundaries, and menu path/error helpers
 - Full Dreamcast build passes with GCC 15.1 and current KOS; compiler
   workarounds and the installed SDK are documented in `docs/docker-dreamcast.md`
 - Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;

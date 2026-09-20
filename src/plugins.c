@@ -10,6 +10,7 @@
 
 #include "bloom-config.h"
 #include "emu.h"
+#include "menu_util.h"
 
 void SPUirq(int);
 
@@ -21,27 +22,32 @@ static int _OpenPlugins() {
 	cdra_set_buf_count(WITH_CDROM_CACHE_SIZE);
 
 	ret = cdra_open();
-	if (ret < 0) { SysPrintf("Error Opening CDR Plugin\n"); return -1; }
+	if (ret < 0) {
+		SysPrintf("Error Opening CDR Plugin\n");
+		return -MENU_CD_ERR_CDR;
+	}
 	ret = SPU_open();
-	if (ret < 0) { SysPrintf("Error Opening SPU Plugin\n"); return -1; }
+	if (ret < 0) {
+		SysPrintf("Error Opening SPU Plugin\n");
+		cdra_close();
+		return -MENU_CD_ERR_SPU;
+	}
 	SPU_registerCallback(SPUirq);
 	SPU_registerScheduleCb(SPUschedule);
 	ret = GPU_open(&gpuDisp, "PCSX", NULL);
-	if (ret < 0) { SysPrintf("Error Opening GPU Plugin\n"); return -1; }
+	if (ret < 0) {
+		SysPrintf("Error Opening GPU Plugin\n");
+		SPU_close();
+		cdra_close();
+		return -MENU_CD_ERR_GPU;
+	}
 
 	return 0;
 }
 
 int OpenPlugins() {
-	int ret;
-
 	plugin_call_rearmed_cbs();
-
-	while ((ret = _OpenPlugins()) == -2) {
-		ReleasePlugins();
-		if (LoadPlugins() == -1) return -1;
-	}
-	return ret;
+	return _OpenPlugins();
 }
 
 void ClosePlugins() {

@@ -29,6 +29,7 @@
 
 #include "bloom-config.h"
 #include "emu.h"
+#include "menu_util.h"
 #include "pvr.h"
 
 int fs_fat_init(void);
@@ -119,14 +120,26 @@ static int load_boot_sstate(const char *path)
 	return ret;
 }
 
+static int last_cd_error;
+
+const char *emu_last_cd_error(void)
+{
+	return menu_cd_error_text(last_cd_error);
+}
+
 bool emu_check_cd(const char *path)
 {
+	int plugins;
+
+	last_cd_error = MENU_CD_OK;
 	SetIsoFile(path);
 
 	ReloadCdromPlugin();
 
-	if (OpenPlugins() < 0) {
-		fprintf(stderr, "Could not open plugins\n");
+	plugins = OpenPlugins();
+	if (plugins < 0) {
+		last_cd_error = -plugins;
+		fprintf(stderr, "%s\n", emu_last_cd_error());
 		return false;
 	}
 
@@ -140,6 +153,7 @@ bool emu_check_cd(const char *path)
 
 	if (!is_exe && CheckCdrom() != 0) {
 		ClosePlugins();
+		last_cd_error = path ? MENU_CD_ERR_NOT_PSX : MENU_CD_ERR_NO_DISC;
 		return false;
 	}
 

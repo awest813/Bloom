@@ -29,6 +29,7 @@ _Bool runMenu(void);
 void plugin_call_rearmed_cbs(void);
 
 _Bool emu_check_cd(const char *path);
+const char *emu_last_cd_error(void);
 
 void ide_init(void);
 void ide_shutdown(void);
