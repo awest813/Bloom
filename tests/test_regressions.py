@@ -60,6 +60,23 @@ int main(void) {
 }
 ''')
 
+    def test_pvr_hybrid_overflow_closes_pt_before_tr(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+''' + functions("src/pvr.c", ["pvr_hybrid_enqueue_kind"]) + r'''
+int main(void) {
+    /* PT, or TR after the list is already open, draws immediately. */
+    assert(pvr_hybrid_enqueue_kind(0, 1, 0, 8) == 0);
+    assert(pvr_hybrid_enqueue_kind(1, 0, 8, 8) == 0);
+    /* TR buffers until the cap, then asks for a PT->TR flush. */
+    assert(pvr_hybrid_enqueue_kind(0, 0, 0, 8) == 1);
+    assert(pvr_hybrid_enqueue_kind(0, 0, 7, 8) == 1);
+    assert(pvr_hybrid_enqueue_kind(0, 0, 8, 8) == 2);
+    assert(pvr_hybrid_enqueue_kind(0, 0, 0, 0) == 2);
+    return 0;
+}
+''')
+
     def test_pvr_blanked_display_writes_vram_without_hardware_queues(self):
         source = (ROOT / "tests/pvr_blanking.c").read_text()
         production = functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_draw",

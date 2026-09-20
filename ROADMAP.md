@@ -78,9 +78,10 @@ attacked:
 4. **Hybrid rendering.** Required for some effects, currently a source of
    glitches (MGS was reported to need it off).
    **Done in this branch:** a full TR poly buffer no longer drops primitives;
-   overflow emits into the current list instead. Remaining: audit PT vs TR
-   ordering when overflow happens mid-frame, and the poly buffer flush vs.
-   software fallback.
+   overflow closes PT, flushes the buffered TR list, and keeps drawing in
+   TR so punch-through order stays legal. Remaining: software fallback
+   when the scene still overflows after that flush, and titles that need
+   hybrid off (MGS).
 5. **Savestate draw-area restore** for E3–E5.
    **Done in this branch** via `sw_sync_ecmds()`.
 
@@ -175,9 +176,12 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
   or `/ram`
 - Checking a disc paints a status line for a frame before `CheckCdrom()`
 - Plugin open failures name CD-ROM vs audio vs GPU and close what opened
+- Hybrid PVR overflow now closes PT and flushes TR instead of mixing lists;
+  bilinear filtering follows Settings rather than the compile-time flag
 - Host regression checks cover audio buffering and VMU loading/metadata;
-  all seven sanitizer suites pass in Docker, including PVR display blanking,
-  texture-cache update boundaries, menu path/error helpers, and settings
+  sanitizer suites pass in Docker, including PVR display blanking, hybrid
+  enqueue policy, texture-cache update boundaries, menu path/error helpers,
+  and settings
 - Full Dreamcast build passes with GCC 15.1 and current KOS; compiler
   workarounds and the installed SDK are documented in `docs/docker-dreamcast.md`
 - Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;
