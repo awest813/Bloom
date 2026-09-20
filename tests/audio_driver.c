@@ -97,7 +97,7 @@ int main(void)
 
     /* Distinct samples detect reordering as well as channel misalignment. */
     for (int pass = 0; pass < 10; pass++) {
-        aica_feed(input, sizeof(input));
+        aica_feed(input, (RING_SAMPLES - 2) * 2);
         assert(ring_count() == RING_SAMPLES - 2);
         for (int offset = 0; offset < RING_SAMPLES; offset += BOUNCE_SAMPLES) {
             aica_callback(0, STREAM_CHN_BYTES, &got);
