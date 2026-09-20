@@ -72,8 +72,8 @@
 #define NB_CODEBOOKS_8BPP   \
 	(CODEBOOK_AREA_SIZE / sizeof(struct pvr_vq_codebook_8bpp))
 
-/* Static headers default to point sampling; pvr_renderer_init() applies the
- * runtime bilinear setting. */
+/* Static headers default to point sampling; pvr_set_list() applies the
+ * runtime bilinear setting when a list opens. */
 
 #define CLUT_IS_MASK BIT(15)
 
@@ -466,9 +466,6 @@ void pvr_renderer_init(void)
 	pvr.start_y = 0;
 	pvr.win_mask_x = 255;
 	pvr.win_mask_y = 255;
-
-	poly_textured.m2.filter_mode = PVR_OPT_BILINEAR()
-		? PVR_FILTER_BILINEAR : PVR_FILTER_NONE;
 
 	if (!WITH_24BPP) {
 		pvr.fake_tex = pvr_mem_malloc(sizeof(fake_tex_data));
@@ -2043,6 +2040,9 @@ static void pvr_set_list(pvr_list_t list)
 	pvr.old_blending_is_none = false;
 
 	pvr_list_begin(list);
+
+	poly_textured.m2.filter_mode = PVR_OPT_BILINEAR()
+		? PVR_FILTER_BILINEAR : PVR_FILTER_NONE;
 
 	if (PVR_OPT_HYBRID()) {
 		poly_textured.m0.list_type = list;

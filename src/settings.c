@@ -378,7 +378,7 @@ void bloom_settings_line(enum bloom_setting_id id, char *dst, size_t dst_sz)
 			right = g_settings.bilinear ? "On" : "Off";
 		break;
 	case BLOOM_SET_HYBRID:
-		left = "Hybrid render";
+		left = "Hybrid PT/TR";
 		if (!g_settings.allow_hybrid)
 			right = "Off (this build)";
 		else
@@ -392,7 +392,7 @@ void bloom_settings_line(enum bloom_setting_id id, char *dst, size_t dst_sz)
 			right = g_settings.clipping ? "On" : "Off";
 		break;
 	case BLOOM_SET_FSAA:
-		left = "FSAA";
+		left = "Horiz. FSAA";
 		if (!g_settings.allow_fsaa)
 			right = "Off (this build)";
 		else

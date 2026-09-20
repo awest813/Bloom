@@ -336,7 +336,7 @@ void MyMenu::populate_dft()
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Run CD-ROM", m_font_size,
 						 [&] {
-		requestLoad(nullptr, "Checking GD-ROM...");
+		requestLoad(nullptr, "Checking CD-ROM...");
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Select CD image", m_font_size,
@@ -504,9 +504,14 @@ void MyMenu::populate(fs::path path, bool back, const std::string &select_name)
 
 	if (open_failed)
 		showError("Unable to open folder; returned to previous folder");
-	else if (m_entries.empty())
-		showError(is_credits ? "No credits found. Press B to go back."
-			  : "No disc images found. Press B to go back.");
+	else if (m_entries.empty()) {
+		if (is_credits)
+			showError("No credits found. Press B to go back.");
+		else if (path == TOP_PATH)
+			showError("No devices found. Press B to go back.");
+		else
+			showError("No disc images found. Press B to go back.");
+	}
 }
 
 void MyMenu::preparePopulate(fs::path path, bool back, bool dft)
@@ -634,7 +639,7 @@ void MyMenu::populateOptions()
 	add_info(std::string("IDE   ") + (WITH_IDE ? "on" : "off") +
 		 "     SD   " + (WITH_SDCARD ? "on" : "off"));
 	add_info("");
-	add_info("Current Settings (next launch unless noted)");
+	add_info("Current Settings (rumble and analog apply immediately)");
 	{
 		char line[80];
 		unsigned int id;
@@ -657,7 +662,7 @@ void MyMenu::populateOptions()
 	add_info("START+A+B+X+Y    quit emulator");
 	add_info("START+D-pad Up   screenshot to /pc");
 	add_info("");
-	add_info("GPU, SPU, and 24-bit need a rebuild. Press B to go back.");
+	add_info("GPU, SPU, 24-bit, CHD, IDE, and SD need a rebuild. Press B to go back.");
 
 	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
 		m_top_scene->animRemoveAll();
@@ -711,14 +716,24 @@ void MyMenu::populateSettings()
 	m_top_scene->subRemoveAll();
 	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
 
-	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_SILENT_AUDIO,
-					       CREDITS_ENTRY_SIZE));
+	auto add_toggle = [&](enum bloom_setting_id id, bool allowed) {
+		if (allowed)
+			addEntry(std::make_shared<ToggleLabel>(m_font, id,
+							       CREDITS_ENTRY_SIZE));
+		else {
+			char line[80];
+
+			bloom_settings_line(id, line, sizeof(line));
+			add_info(line);
+		}
+	};
+
+	add_toggle(BLOOM_SET_SILENT_AUDIO, opt && opt->allow_aica);
 	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_RUMBLE,
 					       CREDITS_ENTRY_SIZE));
 	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_ANALOG,
 					       CREDITS_ENTRY_SIZE));
-	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_VIDEO_480P,
-					       CREDITS_ENTRY_SIZE));
+	add_toggle(BLOOM_SET_VIDEO_480P, opt && opt->allow_480p);
 	if (opt && opt->allow_bilinear)
 		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_BILINEAR,
 						       CREDITS_ENTRY_SIZE));
@@ -735,7 +750,7 @@ void MyMenu::populateSettings()
 	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
 			: "Saved to /sd, /ide, or /ram when possible");
 	add_info("A toggles. Analog and rumble apply now.");
-	add_info("Video and audio apply on the next game launch.");
+	add_info("Video, audio, bilinear, hybrid, clip, FSAA: next launch.");
 	add_info("");
 	add_info(std::string("GPU plugin     ") + GPU_PLUGIN +
 		 "  (rebuild to change)");
@@ -774,8 +789,10 @@ void MyMenu::showStatus(const std::string &msg)
 
 void MyMenu::clearError()
 {
-	if (m_status)
+	if (m_status) {
 		m_status->setText("");
+		m_status->setTint(Color(1.0f, 1.0f, 0.85f, 0.45f));
+	}
 }
 
 void MyMenu::requestLoad(const char *path, const char *busy_msg)
