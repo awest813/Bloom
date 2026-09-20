@@ -1,6 +1,8 @@
 /* Exercise the complete production driver and dfsound output selection. */
 #include <assert.h>
 #include <stdlib.h>
+static int force_silent;
+int bloom_want_silent_audio(void) { return force_silent; }
 #include "src/aica_out.c"
 #define HAVE_AICA
 #include "deps/pcsx_rearmed/plugins/dfsound/out.c"
@@ -95,7 +97,7 @@ int main(void)
 
     /* Distinct samples detect reordering as well as channel misalignment. */
     for (int pass = 0; pass < 10; pass++) {
-        aica_feed(input, sizeof(input));
+        aica_feed(input, (RING_SAMPLES - 2) * 2);
         assert(ring_count() == RING_SAMPLES - 2);
         for (int offset = 0; offset < RING_SAMPLES; offset += BOUNCE_SAMPLES) {
             aica_callback(0, STREAM_CHN_BYTES, &got);
@@ -120,6 +122,30 @@ int main(void)
     aica_callback(0, -1, &got); assert(got == 0);
     aica_callback(0, 100000, &got); assert(got == STREAM_CHN_BYTES);
 
+    /* A full ring plus a new mix must keep the newest samples, not the oldest. */
+    {
+        int16_t newer[256];
+        int skip;
+
+        for (int i = 0; i < 256; i++)
+            newer[i] = (int16_t)(20000 + i);
+        aica_feed(input, (RING_SAMPLES - 2) * 2);
+        aica_feed(newer, sizeof(newer));
+        assert(ring_count() == RING_SAMPLES - 2);
+        aica_callback(0, STREAM_CHN_BYTES, &got);
+        assert(got == STREAM_CHN_BYTES && bounce[0] == 256);
+        skip = ring_count() - 256;
+        while (skip > 0) {
+            int chunk = skip > BOUNCE_SAMPLES ? BOUNCE_SAMPLES : skip;
+            aica_callback(0, chunk * 2, &got);
+            skip -= got / 2;
+        }
+        aica_callback(0, 512, &got);
+        assert(got == 512 && bounce[0] == 20000 && bounce[255] == 20255);
+        while (ring_count())
+            aica_callback(0, STREAM_CHN_BYTES, &got);
+    }
+
     aica_feed(input, 400);
     aica_finish();
     assert(ring_count() == 0 && !stream_started && destroys == 1);
@@ -131,7 +157,16 @@ int main(void)
     assert(!stream_started && ring_count() == 0);
     aica_feed(input, PREFILL_SAMPLES * 2);
     assert(starts == 2 && memcmp(played, input, sizeof(played)) == 0);
-    out_current->finish();
-    assert(shutdowns == 4 && destroys == 2);
+
+    force_silent = 1;
+    {
+        int inits = init_calls;
+        int closed = destroys;
+        SetupSound();
+        assert(strcmp(out_current->name, "none") == 0);
+        assert(init_calls == inits);
+        assert(destroys == closed + 1);
+    }
+    force_silent = 0;
     return 0;
 }

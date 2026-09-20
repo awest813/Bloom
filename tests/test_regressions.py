@@ -60,6 +60,23 @@ int main(void) {
 }
 ''')
 
+    def test_pvr_hybrid_overflow_closes_pt_before_tr(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+''' + functions("src/pvr.c", ["pvr_hybrid_enqueue_kind"]) + r'''
+int main(void) {
+    /* PT, or TR after the list is already open, draws immediately. */
+    assert(pvr_hybrid_enqueue_kind(0, 1, 0, 8) == 0);
+    assert(pvr_hybrid_enqueue_kind(1, 0, 8, 8) == 0);
+    /* TR buffers until the cap, then asks for a PT->TR flush. */
+    assert(pvr_hybrid_enqueue_kind(0, 0, 0, 8) == 1);
+    assert(pvr_hybrid_enqueue_kind(0, 0, 7, 8) == 1);
+    assert(pvr_hybrid_enqueue_kind(0, 0, 8, 8) == 2);
+    assert(pvr_hybrid_enqueue_kind(0, 0, 0, 0) == 2);
+    return 0;
+}
+''')
+
     def test_pvr_blanked_display_writes_vram_without_hardware_queues(self):
         source = (ROOT / "tests/pvr_blanking.c").read_text()
         production = functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_draw",
@@ -68,18 +85,23 @@ int main(void) {
             "/* Production functions are inserted here by test_regressions.py. */",
             production))
 
-    def compile_and_run(self, source):
+    def compile_and_run(self, source, extra_sources=None):
         with tempfile.TemporaryDirectory() as directory:
             source_path = Path(directory) / "check.c"
             binary = Path(directory) / "check"
             source_path.write_text(source)
-            subprocess.run([os.environ.get("CC", "clang"), "-std=gnu11",
-                            "-g", "-fsanitize=address,undefined",
-                            "-fno-sanitize-recover=all",
-                            "-I" + str(ROOT),
-                            "-I" + str(ROOT / "tests/stubs"),
-                            "-I" + str(ROOT / "deps/pcsx_rearmed/plugins/dfsound"),
-                            str(source_path), "-o", str(binary)], check=True)
+            command = [os.environ.get("CC", "clang"), "-std=gnu11",
+                       "-g", "-fsanitize=address,undefined",
+                       "-fno-sanitize-recover=all",
+                       "-I" + str(ROOT),
+                       "-I" + str(ROOT / "src"),
+                       "-I" + str(ROOT / "tests/stubs"),
+                       "-I" + str(ROOT / "deps/pcsx_rearmed/plugins/dfsound"),
+                       str(source_path)]
+            for extra in extra_sources or []:
+                command.append(str(extra))
+            command.extend(["-o", str(binary)])
+            subprocess.run(command, check=True)
             result = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -188,6 +210,222 @@ int main(void) {
     return 0;
 }
 ''')
+
+
+    def test_menu_helpers(self):
+        source = r'''
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "menu_util.h"
+'''
+        self.compile_and_run(source + r'''
+int main(void) {
+    char buf[64];
+
+    assert(menu_is_cd_image_ext(".CHD", true));
+    assert(!menu_is_cd_image_ext(".CHD", false));
+    assert(menu_is_cd_image_ext(".Bin", true));
+    assert(menu_is_cd_image_ext(".img", false));
+    assert(!menu_is_cd_image_ext(".txt", true));
+    assert(!menu_is_cd_image_ext("", true));
+
+    assert(menu_is_browser_root("cd"));
+    assert(menu_is_browser_root("sd"));
+    assert(!menu_is_browser_root("rd"));
+    assert(!menu_is_browser_root("credits"));
+    assert(menu_path_allowed("/"));
+    assert(menu_path_allowed("/sd/games"));
+    assert(!menu_path_allowed("/rd/credits"));
+    assert(!menu_path_allowed("/sd/../ide"));
+    assert(!menu_path_allowed("sd/games"));
+    assert(strcmp(menu_volume_label("cd"), "CD-ROM") == 0);
+    assert(strcmp(menu_volume_label("ide"), "Hard drive") == 0);
+    assert(strcmp(menu_volume_label("other"), "other") == 0);
+
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_CDR), "Could not open CD-ROM") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_SPU), "Could not open audio") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_GPU), "Could not open GPU") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_NOT_PSX), "Not a PlayStation disc image") == 0);
+    assert(strcmp(menu_cd_error_text(MENU_CD_ERR_NO_DISC), "No PlayStation disc detected") == 0);
+    assert(menu_cd_error_from_open(0) == MENU_CD_OK);
+    assert(menu_cd_error_from_open(-MENU_CD_ERR_CDR) == MENU_CD_ERR_CDR);
+    assert(menu_cd_error_from_open(-MENU_CD_ERR_SPU) == MENU_CD_ERR_SPU);
+    assert(menu_cd_error_from_open(-MENU_CD_ERR_GPU) == MENU_CD_ERR_GPU);
+    assert(menu_cd_error_from_open(-99) == MENU_CD_ERR_PLUGIN);
+
+    menu_truncate(buf, sizeof(buf), "short", 8);
+    assert(strcmp(buf, "short") == 0);
+    menu_truncate(buf, sizeof(buf), "abcdefghijk", 8);
+    assert(strcmp(buf, "abcde...") == 0);
+    menu_truncate(buf, 4, "abcdefghijk", 8);
+    assert(strlen(buf) < 4);
+
+    menu_format_location(buf, sizeof(buf), "/");
+    assert(strcmp(buf, "Select a device") == 0);
+    menu_format_location(buf, sizeof(buf), "/cd");
+    assert(strcmp(buf, "CD-ROM") == 0);
+    menu_format_location(buf, sizeof(buf), "/sd/games");
+    assert(strcmp(buf, "SD card / games") == 0);
+    menu_format_location(buf, sizeof(buf), "/ide/psx/iso");
+    assert(strcmp(buf, "Hard drive / psx/iso") == 0);
+
+    assert(menu_page_step(92, 400, 20) == 15);
+    assert(menu_page_step(92, 400, 0) == 1);
+    assert(menu_wrap_index(-1, 5) == 4);
+    assert(menu_wrap_index(5, 5) == 0);
+    assert(menu_wrap_index(2, 5) == 2);
+    assert(menu_clamp_index(-3, 5) == 0);
+    assert(menu_clamp_index(9, 5) == 4);
+    assert(menu_clamp_index(1, 0) == 0);
+
+    const char *names[] = {"cd", "sd", "game.bin"};
+    assert(menu_find_name(names, 3, "sd") == 1);
+    assert(menu_find_name(names, 3, "missing") == 0);
+    return 0;
+}
+''', extra_sources=[ROOT / "src/menu_util.c"])
+
+    def test_input_combos_sticks_and_multitap(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+#include "input_util.h"
+
+int main(void) {
+    uint8_t start_mask = 0, old_start = 0, combo = 0;
+    uint8_t lx, ly, rx, ry;
+
+    assert(bloom_analog_scale(128) == 128);
+    assert(bloom_analog_scale(0) == 0);
+    assert(bloom_analog_scale(255) == 255);
+    assert(bloom_clamp8(-4) == 0 && bloom_clamp8(300) == 255);
+
+    /* Tap START: two frames of Start, then idle. */
+    assert(bloom_start_buttons(1, 0, &start_mask, &old_start, &combo, 3) == 0);
+    assert(start_mask == 1 && combo == 0);
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == (1u << 3));
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == (1u << 3));
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == 0);
+
+    start_mask = old_start = combo = 0;
+    bloom_start_buttons(1, 0, &start_mask, &old_start, &combo, 3);
+    assert(bloom_button_combo(0, 1, 8, 10, &combo) == (1u << 8));
+    assert(combo == 1);
+    assert(bloom_start_buttons(0, 0, &start_mask, &old_start, &combo, 3) == 0);
+
+    bloom_map_analog_combo(1, 10, 200, 128, 128, &combo, 1, &lx, &ly, &rx, &ry);
+    assert(lx == 128 && ly == 128 && rx == 10 && ry == 200);
+    assert(combo & (1u << 1));
+    bloom_map_analog_combo(0, 40, 50, 60, 70, &combo, 1, &lx, &ly, &rx, &ry);
+    assert(lx == 40 && ly == 50 && rx == 60 && ry == 70);
+
+    assert(bloom_pad_wants_multitap(0, 1));
+    assert(!bloom_pad_wants_multitap(1, 1));
+    assert(!bloom_pad_wants_multitap(0, 0));
+    assert(bloom_rumble_should_run(1, 0, 40));
+    assert(!bloom_rumble_should_run(1, 0, 0));
+    assert(!bloom_rumble_should_run(0, 7, 9));
+    assert(!bloom_button_combo(8, 1, 1, 2, &combo));
+    return 0;
+}
+''', extra_sources=[ROOT / "src/input_util.c"])
+
+    def test_settings_parse_cycle_and_paths(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "settings.h"
+
+static const char *readable;
+
+static int is_readable(const char *path) {
+    return readable && strcmp(path, readable) == 0;
+}
+
+int main(void) {
+    struct bloom_settings s;
+    struct bloom_settings_boot boot = {
+        .video_480p = 1, .allow_480p = 1, .allow_aica = 1, .allow_bilinear = 1,
+        .hybrid = 1, .allow_hybrid = 1, .clipping = 1, .allow_clipping = 1,
+        .fsaa = 0, .allow_fsaa = 1,
+    };
+    char line[80];
+    const char *paths[] = { "/sd/bloom.cfg", "/ide/bloom.cfg", "/ram/bloom.cfg" };
+    FILE *fp = tmpfile();
+    char buf[256];
+
+    bloom_settings_reset(&s, &boot);
+    assert(s.rumble && s.analog && s.video_480p && !s.bilinear && !s.silent_audio);
+    assert(s.hybrid && s.clipping && !s.fsaa);
+    assert(bloom_settings_parse_line(&s, "last_path=/etc/passwd") == 1);
+    assert(s.last_path[0] == 0);
+    assert(bloom_settings_parse_line(&s, "last_path=/sd/games"));
+    assert(bloom_settings_parse_line(&s, " silent_audio = on "));
+    assert(bloom_settings_parse_line(&s, "hybrid=off"));
+    assert(bloom_settings_parse_line(&s, "# comment") == 0);
+    assert(s.silent_audio && !s.hybrid);
+    assert(strcmp(s.last_path, "/sd/games") == 0);
+    assert(bloom_settings_write_to(&s, fp) == 0);
+    rewind(fp);
+    bloom_settings_reset(&s, &boot);
+    assert(bloom_settings_load_from(&s, fp) >= 4);
+    assert(s.silent_audio && strcmp(s.last_path, "/sd/games") == 0);
+    fclose(fp);
+
+    bloom_settings_init(&boot);
+    bloom_settings_set_last_path("/ide/iso");
+    assert(bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
+    assert(bloom_want_silent_audio());
+    bloom_settings_line(BLOOM_SET_SILENT_AUDIO, line, sizeof(line));
+    assert(strstr(line, "Silent"));
+    assert(bloom_settings_cycle(BLOOM_SET_RUMBLE));
+    assert(!bloom_settings_rumble());
+    assert(bloom_settings_cycle(BLOOM_SET_HYBRID));
+    assert(!bloom_settings_hybrid());
+    assert(bloom_settings_cycle(BLOOM_SET_CLIPPING));
+    assert(!bloom_settings_clipping());
+    assert(bloom_settings_cycle(BLOOM_SET_FSAA));
+    assert(bloom_settings_fsaa());
+    assert(bloom_settings_cycle(BLOOM_SET_BILINEAR));
+    assert(bloom_settings_bilinear());
+
+    struct bloom_settings_boot locked = { .silent_audio = 1 };
+    bloom_settings_init(&locked);
+    assert(bloom_want_silent_audio());
+    assert(!bloom_settings_video_480p());
+    assert(!bloom_settings_bilinear());
+    assert(!bloom_settings_hybrid());
+    assert(!bloom_settings_clipping());
+    assert(!bloom_settings_fsaa());
+    assert(!bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
+    assert(!bloom_settings_cycle(BLOOM_SET_VIDEO_480P));
+    assert(!bloom_settings_cycle(BLOOM_SET_BILINEAR));
+    assert(!bloom_settings_cycle(BLOOM_SET_HYBRID));
+    assert(!bloom_settings_cycle(BLOOM_SET_CLIPPING));
+    assert(!bloom_settings_cycle(BLOOM_SET_FSAA));
+
+    bloom_settings_reset(&s, &locked);
+    assert(bloom_settings_parse_line(&s, "hybrid=1"));
+    assert(bloom_settings_parse_line(&s, "clipping=1"));
+    assert(bloom_settings_parse_line(&s, "fsaa=1"));
+    fp = tmpfile();
+    assert(fp && bloom_settings_write_to(&s, fp) == 0);
+    rewind(fp);
+    bloom_settings_reset(&s, &locked);
+    assert(bloom_settings_load_from(&s, fp) >= 3);
+    fclose(fp);
+    assert(!s.hybrid && !s.clipping && !s.fsaa);
+
+    readable = "/ide/bloom.cfg";
+    assert(strcmp(bloom_settings_choose_path(is_readable, paths, 3),
+                  "/ide/bloom.cfg") == 0);
+    readable = NULL;
+    assert(bloom_settings_choose_path(is_readable, paths, 3) == NULL);
+    (void)buf;
+    return 0;
+}
+''', extra_sources=[ROOT / "src/settings.c", ROOT / "src/menu_util.c"])
 
 
 if __name__ == "__main__":

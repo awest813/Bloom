@@ -29,7 +29,9 @@
 
 #include "bloom-config.h"
 #include "emu.h"
+#include "menu_util.h"
 #include "pvr.h"
+#include "settings.h"
 
 int fs_fat_init(void);
 void fs_fat_shutdown(void);
@@ -39,6 +41,17 @@ static bool is_exe;
 extern uint32_t _arch_mem_top;
 
 bool started;
+unsigned int screen_width = (WITH_480P ? 640 : 320) << WITH_FSAA;
+unsigned int screen_height = WITH_480P ? 480 : 240;
+
+void emu_apply_video_settings(void)
+{
+	int p480 = bloom_settings_video_480p();
+	int fsaa = bloom_settings_fsaa();
+
+	screen_width = (unsigned int)((p480 ? 640 : 320) << fsaa);
+	screen_height = p480 ? 480 : 240;
+}
 
 void SysPrintf(const char *fmt, ...) {
 	va_list list;
@@ -119,14 +132,28 @@ static int load_boot_sstate(const char *path)
 	return ret;
 }
 
+static int last_cd_error;
+
+const char *emu_last_cd_error(void)
+{
+	return menu_cd_error_text(last_cd_error);
+}
+
 bool emu_check_cd(const char *path)
 {
+	int plugins;
+
+	last_cd_error = MENU_CD_OK;
 	SetIsoFile(path);
 
-	ReloadCdromPlugin();
+	if (ReloadCdromPlugin() < 0) {
+		last_cd_error = MENU_CD_ERR_CDR;
+		return false;
+	}
 
-	if (OpenPlugins() < 0) {
-		fprintf(stderr, "Could not open plugins\n");
+	plugins = OpenPlugins();
+	if (plugins < 0) {
+		last_cd_error = menu_cd_error_from_open(plugins);
 		return false;
 	}
 
@@ -140,25 +167,31 @@ bool emu_check_cd(const char *path)
 
 	if (!is_exe && CheckCdrom() != 0) {
 		ClosePlugins();
+		last_cd_error = path ? MENU_CD_ERR_NOT_PSX : MENU_CD_ERR_NO_DISC;
 		return false;
 	}
 
 	return true;
 }
 
-/* Copy of the default params, but with FSAA enabled */
-static pvr_init_params_t pvr_init_params_fsaa = {
-	.opb_sizes = {
-		PVR_BINSIZE_16,
-		PVR_BINSIZE_0,
-		HARDWARE_ACCELERATED ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
-		(HARDWARE_ACCELERATED && WITH_CLIPPING) ? PVR_BINSIZE_8 : PVR_BINSIZE_0,
-		HARDWARE_ACCELERATED ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
-	},
-	.vertex_buf_size = 768 * 1024,
-	.fsaa_enabled = WITH_FSAA,
-	.opb_overflow_count = 3,
-};
+/* Copy of the default params, but FSAA/clip lists follow Settings. */
+static void emu_pvr_params(pvr_init_params_t *params)
+{
+	int clip = HARDWARE_ACCELERATED && bloom_settings_clipping();
+
+	*params = (pvr_init_params_t){
+		.opb_sizes = {
+			PVR_BINSIZE_16,
+			PVR_BINSIZE_0,
+			HARDWARE_ACCELERATED ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
+			clip ? PVR_BINSIZE_8 : PVR_BINSIZE_0,
+			HARDWARE_ACCELERATED ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
+		},
+		.vertex_buf_size = 768 * 1024,
+		.fsaa_enabled = bloom_settings_fsaa(),
+		.opb_overflow_count = 3,
+	};
+}
 
 int main(int argc, char **argv)
 {
@@ -175,6 +208,26 @@ int main(int argc, char **argv)
 		ide_init();
 	if (WITH_SDCARD)
 		sdcard_init();
+
+	{
+		struct bloom_settings_boot boot = {
+			.video_480p = WITH_480P,
+			.bilinear = WITH_BILINEAR,
+			.silent_audio = strcmp(SPU_PLUGIN, "Null") == 0,
+			.hybrid = WITH_HYBRID_RENDERING,
+			.clipping = WITH_CLIPPING,
+			.fsaa = WITH_FSAA,
+			.allow_480p = WITH_480P,
+			.allow_aica = strcmp(SPU_PLUGIN, "AICA") == 0,
+			.allow_bilinear = HARDWARE_ACCELERATED,
+			.allow_hybrid = HARDWARE_ACCELERATED && WITH_HYBRID_RENDERING,
+			.allow_clipping = HARDWARE_ACCELERATED && WITH_CLIPPING,
+			.allow_fsaa = HARDWARE_ACCELERATED && WITH_FSAA,
+		};
+
+		bloom_settings_init(&boot);
+	}
+	emu_apply_video_settings();
 
 	input_init();
 
@@ -202,7 +255,10 @@ int main(int argc, char **argv)
 		started = false;
 
 		if (WITH_GAME_PATH[0]) {
-			emu_check_cd(WITH_GAME_PATH);
+			if (!emu_check_cd(WITH_GAME_PATH)) {
+				fprintf(stderr, "%s\n", emu_last_cd_error());
+				return 1;
+			}
 			ClosePlugins();
 		} else {
 			vid_set_mode(DM_640x480, PM_RGB888P);
@@ -216,7 +272,9 @@ int main(int argc, char **argv)
 				break;
 		}
 
-		if (WITH_480P)
+		emu_apply_video_settings();
+
+		if (bloom_settings_video_480p())
 			video_mode = DM_640x480;
 		else
 			video_mode = DM_320x240;
@@ -226,8 +284,13 @@ int main(int argc, char **argv)
 		else
 			vid_set_mode(video_mode, PM_RGB565); /* 16-bit */
 
-		/* Re-init PVR without translucent polygon autosort, and optional FSAA */
-		pvr_init(&pvr_init_params_fsaa);
+		{
+			pvr_init_params_t pvr_params;
+
+			emu_pvr_params(&pvr_params);
+			/* Re-init PVR without translucent polygon autosort */
+			pvr_init(&pvr_params);
+		}
 
 		pvr_set_vertical_scale(1.0f);
 
@@ -236,9 +299,22 @@ int main(int argc, char **argv)
 		if (HARDWARE_ACCELERATED)
 			pvr_renderer_init();
 
-		started = true;
-		OpenPlugins();
+		{
+			int plugins = OpenPlugins();
 
+			if (plugins < 0) {
+				last_cd_error = menu_cd_error_from_open(plugins);
+				fprintf(stderr, "%s\n", emu_last_cd_error());
+				if (HARDWARE_ACCELERATED)
+					pvr_renderer_shutdown();
+				pvr_shutdown();
+				if (WITH_GAME_PATH[0])
+					return 1;
+				continue;
+			}
+		}
+
+		started = true;
 		EmuReset();
 
 		if (UsingIso() && !!strncmp(GetIsoFile(), "/cd", sizeof("/cd") - 1))

@@ -21,47 +21,70 @@ extern "C" {
 #include <tsu/triggers/death.h>
 
 #include <fstream>
-#include <functional>
-#include <cctype>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "background.h"
+#include "bloom-config.h"
 #include "emu.h"
 #include "genmenu.h"
-#include "bloom-config.h"
+#include "menu_util.h"
+#include "revision.h"
+#include "settings.h"
 
-#define MENU_OFF_X 200
-#define MENU_OFF_Y 200
+#define SCREEN_W 640
+#define TITLE_Y 32
+#define SUBTITLE_Y 58
+#define MAIN_LIST_Y 128
+#define LIST_Y 92
+#define LIST_BOTTOM 400
+#define STATUS_Y 418
+#define HINT_Y 448
 
 #define MENU_ENTRY_SIZE 32
 #define ENTRY_SIZE 20
-#define CREDITS_ENTRY_SIZE 11
+#define CREDITS_ENTRY_SIZE 12
 
 #define TOP_PATH "/"
 
-static std::string ascii_lower(std::string s)
-{
-	for (char &c : s)
-		c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-	return s;
-}
+static fs::path last_browse = TOP_PATH;
 
 static bool is_cd_image_ext(const std::string &ext)
 {
-	const std::string e = ascii_lower(ext);
+	return menu_is_cd_image_ext(ext.c_str(), WITH_CHD);
+}
 
-	return e == ".iso" || e == ".cue" || e == ".ccd" || e == ".exe"
-		|| e == ".mds" || e == ".pbp" || e == ".bin" || e == ".img"
-		|| e == ".mdf" || (WITH_CHD && e == ".chd");
+static std::string trunc_label(const std::string &text, size_t max_chars)
+{
+	char buf[128];
+
+	menu_truncate(buf, sizeof(buf), text.c_str(), max_chars);
+	return buf;
+}
+
+static fs::path usable_browse_path(fs::path path)
+{
+	std::error_code error;
+
+	if (path.empty() || path == TOP_PATH)
+		return TOP_PATH;
+	if (!menu_path_allowed(path.c_str()))
+		return TOP_PATH;
+	if (fs::is_directory(path, error))
+		return path;
+	path = path.parent_path();
+	if (!path.empty() && path != TOP_PATH && menu_path_allowed(path.c_str())
+	    && fs::is_directory(path, error))
+		return path;
+	return TOP_PATH;
 }
 
 static std::shared_ptr<MyMenu> myMenu;
 
 MyLabel::MyLabel(std::shared_ptr<Font> fh, const std::string& text, int size,
 		 bool centered, const Color& selected, const Color& deselected) :
-	Label(fh, "", size, centered, false),
+	Label(fh, "", size, centered, true),
 	m_color_selected(selected),
 	m_color_deselected(deselected),
 	m_font(fh), m_size(size)
@@ -123,7 +146,7 @@ private:
 
 void PathLabel::activate()
 {
-	const std::string& name = getLabel();
+	const std::string& name = getFsName();
 	const fs::path& pwd = myMenu->pwd();
 	bool back = name.compare("..") == 0;
 
@@ -140,12 +163,10 @@ void PathLabel::activate()
 
 		if (ext.empty()) {
 			myMenu->prepareCredits(path);
-		} else if (emu_check_cd(path.c_str())) {
-			/* Launch ISO! */
-			myMenu->clearError();
-			myMenu->startExit();
+		} else if (is_cd_image_ext(ext)) {
+			myMenu->requestLoad(path.c_str(), "Checking disc image...");
 		} else {
-			myMenu->showError("Could not load this image");
+			myMenu->showError("Not a disc image. Press B to go back.");
 		}
 	} else {
 		myMenu->preparePopulate(path, back, false);
@@ -175,6 +196,47 @@ void TextLabel::cancel()
 	myMenu->preparePopulate("/rd/credits", true, false);
 }
 
+ToggleLabel::ToggleLabel(std::shared_ptr<Font> fh, enum bloom_setting_id id, int size)
+	: MyLabel(fh, "", size, false,
+		  Color(1.0f, 1.0f, 0.95f, 0.7f),
+		  Color(1.0f, 0.7f, 0.7f, 0.7f)),
+	  m_id(id)
+{
+	char buf[80];
+
+	bloom_settings_line(id, buf, sizeof(buf));
+	m_label = buf;
+	setText(m_label);
+}
+
+void ToggleLabel::activate()
+{
+	char buf[80];
+
+	if (!bloom_settings_cycle(m_id)) {
+		myMenu->showError("This build cannot change that option");
+		return;
+	}
+
+	bloom_settings_line(m_id, buf, sizeof(buf));
+	m_label = buf;
+	setText(m_label);
+	input_apply_settings();
+	if (bloom_settings_save() == 0) {
+		const char *path = bloom_settings_path();
+		myMenu->showStatus(path[0] ? (std::string("Saved ") + path)
+					   : "Settings saved");
+	} else {
+		myMenu->showError("Could not save settings");
+	}
+}
+
+void ToggleLabel::cancel()
+{
+	myMenu->persistBrowsePath();
+	myMenu->preparePopulate(fs::path(TOP_PATH), true, true);
+}
+
 void InfoLabel::activate()
 {
 	/* No action for activate on info text */
@@ -187,31 +249,64 @@ void InfoLabel::cancel()
 
 MyMenu::MyMenu(std::shared_ptr<Font> fnt, const fs::path &path)
 	: m_path(path), m_cursel(0), m_font_size(MENU_ENTRY_SIZE),
-	  m_xoffset(MENU_OFF_X)
+	  m_xoffset(SCREEN_W / 2), m_list_y(MAIN_LIST_Y)
 {
 	m_bg = std::make_shared<Background>();
 
-	m_bg->setTint(Color(1.0f, 0.7f, 0.7f, 0.7f));
+	m_bg->setTint(Color(1.0f, 0.55f, 0.55f, 0.6f));
 
 	m_top_scene = std::make_shared<Scene>();
 	m_scene->subAdd(m_bg);
 	m_scene->subAdd(m_top_scene);
 
-	m_top_scene->setTranslate(Vector(-static_cast<float>(m_xoffset), MENU_OFF_Y, 10));
+	m_top_scene->setTranslate(Vector(-static_cast<float>(m_xoffset), m_list_y, 10));
 
 	m_color0 = Color(1, 1, 1, 1);
 	m_color1 = Color(1, 0.5f, 0.5f, 0.5f);
 	m_input_allowed = false;
+	m_pending_load = false;
+	m_wrap = true;
 
 	m_font = fnt;
 	m_exited = false;
 
-	m_status = std::make_shared<Label>(m_font, "", 18, true, false);
-	m_status->setTranslate(Vector(320, 440, 20));
-	m_status->setTint(Color(1.0f, 1.0f, 0.35f, 0.35f));
+	m_title = std::make_shared<Label>(m_font, "Bloom", 28, true, true);
+	m_title->setTranslate(Vector(SCREEN_W / 2, TITLE_Y, 30));
+	m_title->setTint(Color(1.0f, 1.0f, 0.92f, 0.78f));
+	m_scene->subAdd(m_title);
+
+	m_location = std::make_shared<Label>(m_font, "", 16, true, true);
+	m_location->setTranslate(Vector(SCREEN_W / 2, SUBTITLE_Y, 30));
+	m_location->setTint(Color(1.0f, 0.82f, 0.82f, 0.82f));
+	m_scene->subAdd(m_location);
+
+	m_status = std::make_shared<Label>(m_font, "", 16, true, true);
+	m_status->setTranslate(Vector(SCREEN_W / 2, STATUS_Y, 30));
+	m_status->setTint(Color(1.0f, 1.0f, 0.4f, 0.4f));
 	m_scene->subAdd(m_status);
 
+	m_hint = std::make_shared<Label>(m_font, "", 14, true, true);
+	m_hint->setTranslate(Vector(SCREEN_W / 2, HINT_Y, 30));
+	m_hint->setTint(Color(1.0f, 0.7f, 0.7f, 0.7f));
+	m_scene->subAdd(m_hint);
+
+	setAutoRepeat(Event::KeyUp, true);
+	setAutoRepeat(Event::KeyDown, true);
+	setAutoRepeat(Event::KeyLeft, true);
+	setAutoRepeat(Event::KeyRight, true);
+	setAutoRepeat(Event::KeyPgup, true);
+	setAutoRepeat(Event::KeyPgdn, true);
+	setTimeout(3600);
+
 	populate_dft();
+}
+
+void MyMenu::setChrome(const std::string &location, const std::string &hint)
+{
+	if (m_location)
+		m_location->setText(location);
+	if (m_hint)
+		m_hint->setText(hint);
 }
 
 void MyMenu::addEntry(std::shared_ptr<MyLabel> entry)
@@ -228,29 +323,30 @@ void MyMenu::addEntry(std::shared_ptr<MyLabel> entry)
 void MyMenu::populate_dft()
 {
 	m_font_size = MENU_ENTRY_SIZE;
-	m_xoffset = MENU_OFF_X;
+	m_xoffset = SCREEN_W / 2;
+	m_list_y = MAIN_LIST_Y;
+	m_wrap = true;
 
 	std::shared_ptr<AnimFadeIn> anim;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
 	m_top_scene->subRemoveAll();
-	m_top_scene->setTranslate(Vector(800.0f, MENU_OFF_Y, 10));
+	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Run CD-ROM", m_font_size,
 						 [&] {
-		if (emu_check_cd(nullptr)) {
-			/* Launch CD-Rom! */
-			clearError();
-			startExit();
-		} else {
-			showError("No PlayStation disc detected");
-		}
+		requestLoad(nullptr, "Checking GD-ROM...");
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Select CD image", m_font_size,
 						 [&] {
-		preparePopulate(fs::path(TOP_PATH), false, false);
+		preparePopulate(usable_browse_path(last_browse), false, false);
+	}));
+
+	addEntry(std::make_shared<MainMenuLabel>(m_font, "Settings", m_font_size,
+						 [&] {
+		prepareSettings();
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Build info", m_font_size,
@@ -260,7 +356,7 @@ void MyMenu::populate_dft()
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Credits", m_font_size,
 						 [&] {
-		myMenu->preparePopulate("/rd/credits", false, false);
+		preparePopulate("/rd/credits", false, false);
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Quit", m_font_size,
@@ -277,10 +373,13 @@ void MyMenu::populate_dft()
 
 	m_input_allowed = true;
 	m_cursel = 0;
+	m_path = TOP_PATH;
 	clearError();
+	setChrome("PlayStation emulator", "A Select");
+	bloom_settings_flush();
 }
 
-void MyMenu::populate(fs::path path, bool back)
+void MyMenu::populate(fs::path path, bool back, const std::string &select_name)
 {
 	float dx = back ? 1.0f : -1.0f;
 	std::shared_ptr<AnimFadeIn> anim;
@@ -291,29 +390,39 @@ void MyMenu::populate(fs::path path, bool back)
 	bool is_credits = path.compare("/rd/credits") == 0;
 	int fd;
 	bool open_failed = false;
+	char loc[96];
 
 	m_font_size = ENTRY_SIZE;
-	m_xoffset = 200;
+	m_xoffset = 48;
+	m_list_y = LIST_Y;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
 	m_top_scene->subRemoveAll();
-	m_top_scene->setTranslate(Vector(dx * -800.0f, MENU_OFF_Y, 10));
+	m_top_scene->setTranslate(Vector(dx * -800.0f, m_list_y, 10));
 
 	fd = fs_open(path.c_str(), O_DIR);
 	if (fd == -1) {
 		open_failed = true;
 		fprintf(stderr, "Unable to open directory: %s\n", path.c_str());
-		if (!m_path.empty() && m_path != path)
+		if (!m_path.empty() && m_path != path) {
 			fd = fs_open(m_path.c_str(), O_DIR);
+			if (fd != -1)
+				path = m_path;
+		}
+		if (fd == -1 && last_browse != path) {
+			fd = fs_open(last_browse.c_str(), O_DIR);
+			if (fd != -1)
+				path = last_browse;
+		}
 		if (fd == -1) {
 			populate_dft();
 			showError("Unable to open directory");
 			return;
 		}
-		path = m_path;
 	}
 	is_credits = path == "/rd/credits";
+	m_wrap = !is_credits;
 
 	while ((d = fs_readdir(fd))) {
 		std::string name = d->name;
@@ -323,7 +432,9 @@ void MyMenu::populate(fs::path path, bool back)
 		if (error)
 			continue;
 
-		if (name == ".")
+		if (name == "." || name == "..")
+			continue;
+		if (!name.empty() && name[0] == '.')
 			continue;
 
 		if (is_file) {
@@ -332,14 +443,8 @@ void MyMenu::populate(fs::path path, bool back)
 			if (!is_cd_image_ext(ext) && (!is_credits || !ext.empty()))
 				continue;
 		} else if (path == TOP_PATH) {
-			if (name != "cd"
-			    && name != "pc"
-			    && name != "ide"
-			    && name != "sd") {
+			if (!menu_is_browser_root(name.c_str()))
 				continue;
-			}
-		} else if (name == "..") {
-			continue;
 		}
 
 		if (is_file)
@@ -349,13 +454,20 @@ void MyMenu::populate(fs::path path, bool back)
 	}
 
 	for (fs::path filepath : dirset) {
-		addEntry(std::make_shared<PathLabel>(m_font, filepath,
-						     false, m_font_size));
+		std::string fs_name = filepath.string();
+		std::string display = (path == TOP_PATH)
+			? menu_volume_label(fs_name.c_str())
+			: fs_name + "/";
+
+		addEntry(std::make_shared<PathLabel>(m_font, trunc_label(display, 38),
+						     false, m_font_size, fs_name));
 	}
 
 	for (fs::path filepath : fileset) {
-		addEntry(std::make_shared<PathLabel>(m_font, filepath,
-						     true, m_font_size));
+		std::string fs_name = filepath.string();
+
+		addEntry(std::make_shared<PathLabel>(m_font, trunc_label(fs_name, 38),
+						     true, m_font_size, fs_name));
 	}
 
 	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
@@ -366,9 +478,30 @@ void MyMenu::populate(fs::path path, bool back)
 	fs_close(fd);
 
 	m_path = path;
+	if (!is_credits && path != "/rd") {
+		last_browse = path;
+		bloom_settings_set_last_path(path.c_str());
+	}
 	m_cursel = 0;
 	m_input_allowed = true;
 	clearError();
+
+	if (!select_name.empty()) {
+		for (unsigned int i = 0; i < m_entries.size(); i++) {
+			if (m_entries[i]->getFsName() == select_name) {
+				setEntry(i);
+				break;
+			}
+		}
+	}
+
+	if (is_credits) {
+		setChrome("Credits", "A Open   B Back   D-pad Scroll");
+	} else {
+		menu_format_location(loc, sizeof(loc), path.c_str());
+		setChrome(trunc_label(loc, 48), "A Open   B Back   L/R Page");
+	}
+
 	if (open_failed)
 		showError("Unable to open folder; returned to previous folder");
 	else if (m_entries.empty())
@@ -379,6 +512,10 @@ void MyMenu::populate(fs::path path, bool back)
 void MyMenu::preparePopulate(fs::path path, bool back, bool dft)
 {
 	float dx = back ? 1.0f : -1.0f;
+	std::string restore;
+
+	if (back && !m_path.empty() && m_path != TOP_PATH)
+		restore = m_path.filename().string();
 
 	std::error_code error;
 	if (back || fs::is_directory(path, error) || path == fs::path(TOP_PATH)) {
@@ -387,7 +524,7 @@ void MyMenu::preparePopulate(fs::path path, bool back, bool dft)
 			if (dft)
 				populate_dft();
 			else
-				populate(path, back);
+				populate(path, back, restore);
 		});
 
 		m_top_scene->animRemoveAll();
@@ -423,15 +560,17 @@ void MyMenu::populateCredits(fs::path path)
 	}
 
 	m_font_size = CREDITS_ENTRY_SIZE;
-	m_xoffset = 10;
+	m_xoffset = 36;
+	m_list_y = LIST_Y;
+	m_wrap = false;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
 	m_top_scene->subRemoveAll();
-	m_top_scene->setTranslate(Vector(800.0f, MENU_OFF_Y, 10));
+	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
 
 	while (std::getline(fd, line)) {
-		addEntry(std::make_shared<TextLabel>(m_font, line,
+		addEntry(std::make_shared<TextLabel>(m_font, trunc_label(line, 72),
 						     CREDITS_ENTRY_SIZE));
 	}
 	if (m_entries.empty())
@@ -446,6 +585,8 @@ void MyMenu::populateCredits(fs::path path)
 	m_input_allowed = true;
 	m_cursel = 0;
 	clearError();
+	setChrome(trunc_label(path.filename().string(), 40),
+		  "B Back   D-pad Scroll");
 }
 
 void MyMenu::prepareOptions()
@@ -468,44 +609,55 @@ void MyMenu::populateOptions()
 	};
 
 	m_font_size = CREDITS_ENTRY_SIZE;
-	m_xoffset = 10;
+	m_xoffset = 36;
+	m_list_y = LIST_Y;
+	m_wrap = false;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
 	m_top_scene->subRemoveAll();
-	m_top_scene->setTranslate(Vector(800.0f, MENU_OFF_Y, 10));
+	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
 
-	add_info("Build options (compile-time)");
+	add_info(std::string("Build  ") + REV);
+	add_info("Compile-time features. Live toggles are in Settings.");
 	add_info("");
-	add_info(std::string("GPU: ") + GPU_PLUGIN +
-		 (HARDWARE_ACCELERATED ? " (faster, lower compatibility)"
-				       : " (slower, higher compatibility)"));
-	add_info(std::string("SPU: ") + SPU_PLUGIN +
+	add_info(std::string("GPU   ") + GPU_PLUGIN +
+		 (HARDWARE_ACCELERATED ? "  — faster, lower compatibility"
+				       : "  — slower, higher compatibility"));
+	add_info(std::string("SPU   ") + SPU_PLUGIN +
 		 (std::string(SPU_PLUGIN) == "AICA"
-		  ? " (dfsound mix, AICA output)"
-		  : " (silent, SPU IRQs emulated)"));
-	add_info(std::string("Resolution: ") + (WITH_480P ? "640x480" : "320x240"));
-	add_info(std::string("Hybrid rendering: ") + (WITH_HYBRID_RENDERING ? "on" : "off"));
-	add_info(std::string("FSAA: ") + (WITH_FSAA ? "on" : "off"));
-	add_info(std::string("24-bit framebuffer: ") + (WITH_24BPP ? "on" : "off"));
-	add_info(std::string("Bilinear filtering: ") + (WITH_BILINEAR ? "on" : "off"));
-	add_info(std::string("Pixel clipping: ") + (WITH_CLIPPING ? "on" : "off"));
-	add_info(std::string("CHD images: ") + (WITH_CHD ? "on" : "off"));
-	add_info(std::string("IDE: ") + (WITH_IDE ? "on" : "off") +
-		 "   SD: " + (WITH_SDCARD ? "on" : "off"));
+		  ? "  — dfsound mix, AICA output"
+		  : "  — silent, SPU IRQs emulated"));
+	add_info(std::string("24-bit framebuffer   ") + (WITH_24BPP ? "on" : "off")
+		 + "  (rebuild to change)");
+	add_info(std::string("CHD images   ") + (WITH_CHD ? "on" : "off"));
+	add_info(std::string("IDE   ") + (WITH_IDE ? "on" : "off") +
+		 "     SD   " + (WITH_SDCARD ? "on" : "off"));
+	add_info("");
+	add_info("Current Settings (next launch unless noted)");
+	{
+		char line[80];
+		unsigned int id;
+
+		for (id = 0; id < BLOOM_SET_COUNT; id++) {
+			bloom_settings_line((enum bloom_setting_id)id, line,
+					    sizeof(line));
+			add_info(line);
+		}
+	}
 	add_info("");
 	add_info("Controls");
-	add_info("A Cross     START+A Select");
-	add_info("B Circle    START+B R3");
-	add_info("X Square    START+X L3");
-	add_info("Y Triangle  Z Select  C L2  D R2");
-	add_info("L/R triggers  L1/R1    START+L/R  L2/R2");
+	add_info("A Cross          START+A Select");
+	add_info("B Circle         START+B R3");
+	add_info("X Square         START+X L3");
+	add_info("Y Triangle       Z Select");
+	add_info("C L2   D R2      L/R triggers  L1/R1");
 	add_info("START  Start (hold with another button for combos)");
-	add_info("START + analog stick  right stick");
-	add_info("START+A+B+X+Y  quit emulator");
-	add_info("START+D-pad Up  screenshot to /pc");
+	add_info("START + analog   right stick");
+	add_info("START+A+B+X+Y    quit emulator");
+	add_info("START+D-pad Up   screenshot to /pc");
 	add_info("");
-	add_info("Change these with kos-ccmake. Press B to go back.");
+	add_info("GPU, SPU, and 24-bit need a rebuild. Press B to go back.");
 
 	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
 		m_top_scene->animRemoveAll();
@@ -515,13 +667,108 @@ void MyMenu::populateOptions()
 	m_input_allowed = true;
 	m_cursel = 0;
 	clearError();
+	setChrome("Build info", "B Back   D-pad Scroll");
+}
+
+void MyMenu::persistBrowsePath()
+{
+	std::string path = last_browse.string();
+
+	if (!menu_path_allowed(path.c_str()))
+		return;
+	bloom_settings_set_last_path(path.c_str());
+	bloom_settings_flush();
+}
+
+void MyMenu::prepareSettings()
+{
+	auto anim = std::make_shared<AnimFadeAway>(false, -1.0f,
+						   -800.0f, [=, this] {
+		populateSettings();
+	});
+
+	m_top_scene->animRemoveAll();
+	m_top_scene->animAdd(anim);
+	m_input_allowed = false;
+}
+
+void MyMenu::populateSettings()
+{
+	std::shared_ptr<AnimFadeIn> anim;
+	const char *cfg = bloom_settings_path();
+	auto add_info = [&](const std::string &line) {
+		addEntry(std::make_shared<InfoLabel>(m_font, line, CREDITS_ENTRY_SIZE));
+	};
+	struct bloom_settings *opt = bloom_settings_get();
+
+	m_font_size = CREDITS_ENTRY_SIZE;
+	m_xoffset = 36;
+	m_list_y = LIST_Y;
+	m_wrap = false;
+
+	m_entries.clear();
+	m_top_scene->animRemoveAll();
+	m_top_scene->subRemoveAll();
+	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
+
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_SILENT_AUDIO,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_RUMBLE,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_ANALOG,
+					       CREDITS_ENTRY_SIZE));
+	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_VIDEO_480P,
+					       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_bilinear)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_BILINEAR,
+						       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_hybrid)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_HYBRID,
+						       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_clipping)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_CLIPPING,
+						       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_fsaa)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_FSAA,
+						       CREDITS_ENTRY_SIZE));
+	add_info("");
+	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
+			: "Saved to /sd, /ide, or /ram when possible");
+	add_info("A toggles. Analog and rumble apply now.");
+	add_info("Video and audio apply on the next game launch.");
+	add_info("");
+	add_info(std::string("GPU plugin     ") + GPU_PLUGIN +
+		 "  (rebuild to change)");
+	add_info(std::string("SPU mix        ") + SPU_PLUGIN +
+		 "  (rebuild to change)");
+	add_info(std::string("24-bit FB      ") + (WITH_24BPP ? "on" : "off") +
+		 "  (rebuild to change)");
+	add_info("CHD, IDE, and SD stay compile-time.");
+
+	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
+		m_top_scene->animRemoveAll();
+	});
+	m_top_scene->animAdd(anim);
+
+	m_input_allowed = true;
+	m_cursel = 0;
+	clearError();
+	setChrome("Settings", "A Toggle   B Back");
 }
 
 void MyMenu::showError(const std::string &msg)
 {
 	if (m_status) {
 		m_status->setText(msg);
-		m_status->setTint(Color(1.0f, 1.0f, 0.35f, 0.35f));
+		m_status->setTint(Color(1.0f, 1.0f, 0.4f, 0.4f));
+	}
+}
+
+void MyMenu::showStatus(const std::string &msg)
+{
+	if (m_status) {
+		m_status->setText(msg);
+		m_status->setTint(Color(1.0f, 1.0f, 0.85f, 0.45f));
 	}
 }
 
@@ -529,6 +776,56 @@ void MyMenu::clearError()
 {
 	if (m_status)
 		m_status->setText("");
+}
+
+void MyMenu::requestLoad(const char *path, const char *busy_msg)
+{
+	showStatus(busy_msg ? busy_msg : "Checking disc...");
+	m_pending_iso = path ? path : "";
+	m_pending_load = true;
+	m_input_allowed = false;
+}
+
+void MyMenu::visualPerFrame()
+{
+	GenericMenu::visualPerFrame();
+
+	if (!m_pending_load)
+		return;
+
+	m_pending_load = false;
+
+	if (emu_check_cd(m_pending_iso.empty() ? nullptr : m_pending_iso.c_str())) {
+		extern char CdromId[10];
+		if (CdromId[0])
+			showStatus(std::string("Starting ") + CdromId);
+		else
+			clearError();
+		persistBrowsePath();
+		startExit();
+	} else {
+		showError(emu_last_cd_error());
+		m_input_allowed = true;
+	}
+}
+
+unsigned int MyMenu::pageStep() const
+{
+	return menu_page_step(m_list_y, LIST_BOTTOM, m_font_size);
+}
+
+void MyMenu::moveSelection(int delta, bool wrap)
+{
+	int next;
+
+	if (m_entries.empty())
+		return;
+
+	next = (int)m_cursel + delta;
+	if (wrap)
+		setEntry(menu_wrap_index(next, m_entries.size()));
+	else
+		setEntry(menu_clamp_index(next, m_entries.size()));
 }
 
 void MyMenu::setEntry(unsigned int entry) {
@@ -539,7 +836,7 @@ void MyMenu::setEntry(unsigned int entry) {
 	m_entries[m_cursel]->deselect();
 	m_cursel = entry;
 
-	offset_y = MENU_OFF_Y + (int)entry * -(int)m_font_size;
+	offset_y = (int)m_list_y + (int)entry * -(int)m_font_size;
 
 	m_entries[entry]->select();
 	m_top_scene->animRemoveAll();
@@ -563,32 +860,20 @@ void MyMenu::inputEvent(const Event & evt) {
 
 	switch(evt.key) {
 	case Event::KeyUp:
-		if (m_cursel > 0)
-			setEntry(m_cursel - 1);
+		moveSelection(-1, m_wrap);
 		break;
 
 	case Event::KeyLeft:
-		if (m_cursel > 0)
-			setEntry(m_cursel > 5 ? m_cursel - 5 : 0);
+	case Event::KeyPgup:
+		moveSelection(-(int)pageStep(), false);
 		break;
 
 	case Event::KeyDown:
-		if (m_cursel + 1 < m_entries.size())
-			setEntry(m_cursel + 1);
-
+		moveSelection(1, m_wrap);
 		break;
 	case Event::KeyRight:
-		if (m_cursel + 1 < m_entries.size()) {
-			unsigned int entry;
-
-			if (m_cursel + 5 < m_entries.size())
-				entry = m_cursel + 5;
-			else
-				entry = m_entries.size() - 1;
-
-
-			setEntry(entry);
-		}
+	case Event::KeyPgdn:
+		moveSelection((int)pageStep(), false);
 		break;
 	case Event::KeyCancel:
 		m_entries[m_cursel]->cancel();
@@ -598,14 +883,20 @@ void MyMenu::inputEvent(const Event & evt) {
 		m_entries[m_cursel]->activate();
 
 		break;
+	case Event::KeyStart:
+	case Event::KeyMiscX:
+	case Event::KeyMiscY:
+	case Event::KeyReset:
+		break;
 	default:
-		printf("Unhandled Event Key\n");
 		break;
 	}
 }
 
 void MyMenu::startExit() {
 	m_input_allowed = false;
+	m_pending_load = false;
+	persistBrowsePath();
 	// Apply some expmovers to the options.
 
 	for (unsigned int i = 0; i < m_entries.size(); i++) {
@@ -681,12 +972,20 @@ void AnimFadeIn::nextFrame(Drawable *t) {
 extern "C" bool runMenu(void)
 {
 	bool exited;
+	const char *saved = bloom_settings_get()->last_path;
+	const char *err;
+
+	last_browse = usable_browse_path(saved);
 
 	// Load a font
 	auto fnt = std::make_shared<Font>("/rd/typewriter.txf");
 
 	// Create a menu
 	myMenu = std::make_shared<MyMenu>(fnt, fs::path(TOP_PATH));
+
+	err = emu_last_cd_error();
+	if (err && err[0])
+		myMenu->showError(err);
 
 	// Do the menu
 	myMenu->doMenu();

@@ -22,6 +22,17 @@
 #include "bloom-config.h"
 #include "emu.h"
 #include "pvr.h"
+#include "settings.h"
+
+#ifndef PVR_OPT_HYBRID
+#define PVR_OPT_HYBRID() bloom_settings_hybrid()
+#endif
+#ifndef PVR_OPT_CLIP
+#define PVR_OPT_CLIP() bloom_settings_clipping()
+#endif
+#ifndef PVR_OPT_BILINEAR
+#define PVR_OPT_BILINEAR() bloom_settings_bilinear()
+#endif
 
 #if ENABLE_THREADED_RENDERER
 #include "../deps/pcsx_rearmed/plugins/gpulib/gpulib_thread_if.h"
@@ -61,7 +72,8 @@
 #define NB_CODEBOOKS_8BPP   \
 	(CODEBOOK_AREA_SIZE / sizeof(struct pvr_vq_codebook_8bpp))
 
-#define FILTER_MODE (WITH_BILINEAR ? PVR_FILTER_BILINEAR : PVR_FILTER_NONE)
+/* Static headers default to point sampling; pvr_renderer_init() applies the
+ * runtime bilinear setting. */
 
 #define CLUT_IS_MASK BIT(15)
 
@@ -233,6 +245,7 @@ struct pvr_renderer {
 	int16_t start_x, start_y, view_x, view_y;
 
 	uint32_t new_frame :1;
+	uint32_t tr_open :1;
 	uint32_t has_bg :1;
 
 	uint32_t set_mask :1;
@@ -453,6 +466,9 @@ void pvr_renderer_init(void)
 	pvr.start_y = 0;
 	pvr.win_mask_x = 255;
 	pvr.win_mask_y = 255;
+
+	poly_textured.m2.filter_mode = PVR_OPT_BILINEAR()
+		? PVR_FILTER_BILINEAR : PVR_FILTER_NONE;
 
 	if (!WITH_24BPP) {
 		pvr.fake_tex = pvr_mem_malloc(sizeof(fake_tex_data));
@@ -1289,7 +1305,7 @@ static void draw_prim(const pvr_poly_hdr_t *hdr,
 
 		pvr_dr_commit(vert);
 
-		if (!WITH_CLIPPING || unlikely(!textured || !modified))
+		if (!PVR_OPT_CLIP() || unlikely(!textured || !modified))
 			continue;
 
 		vert2 = pvr_dr_target();
@@ -1490,7 +1506,7 @@ static pvr_poly_hdr_t poly_textured = {
 		.v_size = PVR_UV_SIZE_1024,
 		.u_size = PVR_UV_SIZE_1024,
 		.shading = PVR_TXRENV_MODULATE,
-		.filter_mode = FILTER_MODE,
+		.filter_mode = PVR_FILTER_NONE,
 		.fog_type = PVR_FOG_DISABLE,
 		.blend_dst = PVR_BLEND_INVSRCALPHA,
 		.blend_src = PVR_BLEND_SRCALPHA,
@@ -1600,6 +1616,11 @@ static void pvr_avoid_tile_clip_glitch(void)
 static void pvr_tile_clip(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
 {
 	pvr_poly_hdr_t *sq_hdr;
+
+	if (x2 < 1)
+		x2 = 1;
+	if (y2 < 1)
+		y2 = 1;
 
 	sq_hdr = pvr_dr_target();
 
@@ -1722,7 +1743,7 @@ static void poly_draw_now(const struct poly *poly)
 	pvr_ptr_t tex = NULL;
 	float z;
 
-	if (WITH_CLIPPING && unlikely(poly->flags & POLY_TILECLIP)) {
+	if (PVR_OPT_CLIP() && unlikely(poly->flags & POLY_TILECLIP)) {
 		/* We'll send a new header, so the next poly can't reuse the
 		 * previous one */
 		pvr.old_blending_is_none = false;
@@ -1754,7 +1775,7 @@ static void poly_draw_now(const struct poly *poly)
 		return;
 	}
 
-	if (WITH_CLIPPING && unlikely((pvr.old_flags ^ flags) & POLY_NOCLIP))
+	if (PVR_OPT_CLIP() && unlikely((pvr.old_flags ^ flags) & POLY_NOCLIP))
 		pvr_avoid_tile_clip_glitch();
 
 	pvr.old_blending_is_none = poly->blending_mode == BLENDING_MODE_NONE;
@@ -1763,7 +1784,7 @@ static void poly_draw_now(const struct poly *poly)
 
 	copy32(&hdr, poly_hdr);
 
-	if (WITH_CLIPPING && likely(!(poly->flags & POLY_NOCLIP))) {
+	if (PVR_OPT_CLIP() && likely(!(poly->flags & POLY_NOCLIP))) {
 		hdr.m0.modifier_en = true;
 		hdr.m0.mod_normal = true;
 		hdr.m0.clip_mode = PVR_USERCLIP_INSIDE;
@@ -2023,7 +2044,7 @@ static void pvr_set_list(pvr_list_t list)
 
 	pvr_list_begin(list);
 
-	if (WITH_HYBRID_RENDERING) {
+	if (PVR_OPT_HYBRID()) {
 		poly_textured.m0.list_type = list;
 		poly_nontextured.m0.list_type = list;
 		poly_dummy.m0.list_type = list;
@@ -2040,8 +2061,9 @@ static void pvr_start_scene(pvr_list_t list)
 	pvr_set_list(list);
 
 	pvr.new_frame = 0;
+	pvr.tr_open = list == PVR_LIST_TR_POLY;
 
-	if (WITH_CLIPPING) {
+	if (PVR_OPT_CLIP()) {
 		pvr_add_clip(3);
 
 		/* Reset tile clip */
@@ -2049,29 +2071,68 @@ static void pvr_start_scene(pvr_list_t list)
 	}
 }
 
+static void polybuf_render_from_start(void);
+
+/* Hybrid list policy: PT draws now; TR is buffered until the frame ends.
+ * If the TR buffer fills, PT is closed and the buffer is flushed into TR
+ * so later primitives keep a legal list order instead of painting TR into PT. */
+static int pvr_hybrid_enqueue_kind(int tr_open, int list_is_pt,
+				   unsigned int buffered, unsigned int cap)
+{
+	if (tr_open || list_is_pt)
+		return 0;
+	if (buffered < cap)
+		return 1;
+	return 2;
+}
+
+static void pvr_open_tr_list(void)
+{
+	if (pvr.tr_open)
+		return;
+	if (unlikely(pvr.new_frame))
+		pvr_start_scene(PVR_LIST_TR_POLY);
+	else {
+		pvr_list_finish();
+		pvr_set_list(PVR_LIST_TR_POLY);
+		pvr.tr_open = 1;
+	}
+}
+
 __pvr
 static void poly_enqueue(pvr_list_t list, const struct poly *poly)
 {
-	if (!WITH_HYBRID_RENDERING || likely(list == PVR_LIST_PT_POLY)) {
-		if (unlikely(pvr.new_frame))
-			pvr_start_scene(list);
+	int kind;
 
-		poly_draw_now(poly);
-	} else if (unlikely(pvr.polybuf_cnt_start == __array_size(polybuf))) {
-		/* The TR list cannot open until PT is closed, so overflow
-		 * cannot flush the buffer. Emit into the current list rather
-		 * than dropping the primitive (MGS-style missing polys). */
+	if (!PVR_OPT_HYBRID()) {
 		if (unlikely(pvr.new_frame))
 			pvr_start_scene(list);
 		poly_draw_now(poly);
-	} else {
-		poly_copy(&polybuf[pvr.polybuf_cnt_start++], poly);
+		return;
 	}
+
+	kind = pvr_hybrid_enqueue_kind(pvr.tr_open, list == PVR_LIST_PT_POLY,
+				       pvr.polybuf_cnt_start,
+				       __array_size(polybuf));
+	if (kind == 1) {
+		poly_copy(&polybuf[pvr.polybuf_cnt_start++], poly);
+		return;
+	}
+	if (kind == 2) {
+		pvr_open_tr_list();
+		polybuf_render_from_start();
+	} else if (unlikely(pvr.new_frame)) {
+		pvr_start_scene(list);
+	}
+	poly_draw_now(poly);
 }
 
 static void polybuf_render_from_start(void)
 {
 	unsigned int i;
+
+	if (!pvr.polybuf_cnt_start)
+		return;
 
 	poly_prefetch(&polybuf[0]);
 
@@ -2089,7 +2150,12 @@ static inline struct vertex_coords
 vertex_coords_cut(struct vertex_coords a, struct vertex_coords b,
 		  unsigned int ucut)
 {
-	unsigned int factor = ((ucut - a.u) << 16) / (b.u - a.u);
+	unsigned int du = b.u - a.u;
+	unsigned int factor;
+
+	if (unlikely(!du))
+		return a;
+	factor = ((ucut - a.u) << 16) / du;
 
 	return (struct vertex_coords){
 		.x = a.x + ((unsigned int)(b.x - a.x) * factor >> 16),
@@ -2108,7 +2174,11 @@ static inline uint32_t color_lerp(struct vertex_coords v1, struct vertex_coords 
 	uint32_t rb, g;
 
 	if (unlikely(c1 != c2)) {
-		factor = ((ucut - v1.u) << 8) / (v2.u - v1.u);
+		unsigned int du = v2.u - v1.u;
+
+		if (unlikely(!du))
+			return c1;
+		factor = ((ucut - v1.u) << 8) / du;
 
 		/* Interpolate Red & Blue */
 		rb = ((c2 & maskRB) - (c1 & maskRB)) * factor >> 8;
@@ -2261,7 +2331,7 @@ static bool poly_should_clip(const struct poly *poly)
 {
 	unsigned int i;
 
-	if (WITH_CLIPPING && pvr.clip_test) {
+	if (PVR_OPT_CLIP() && pvr.clip_test) {
 		for (i = 0; i < poly_get_vertex_count(poly); i++) {
 			if (poly->coords[i].x < pvr.draw_x1
 			    || poly->coords[i].x > pvr.draw_x2
@@ -2470,7 +2540,7 @@ static void process_poly_inner(struct poly *poly, bool scissor, int texwin_budge
 	pvr_list_t list;
 
 	/* If the clip area matches the screen area, we don't need to clip */
-	if (WITH_CLIPPING && !pvr.clip_test)
+	if (PVR_OPT_CLIP() && !pvr.clip_test)
 		poly->flags |= POLY_NOCLIP;
 
 	if (poly->flags & POLY_TEXTURED) {
@@ -2578,15 +2648,15 @@ static void process_poly_inner(struct poly *poly, bool scissor, int texwin_budge
 			pvr.zoffset += 5;
 			poly->flags |= POLY_CHECK_MASK;
 			poly_enqueue(PVR_LIST_TR_POLY, poly);
-		} else if (WITH_BILINEAR) {
+		} else if (PVR_OPT_BILINEAR()) {
 			poly_enqueue(PVR_LIST_TR_POLY, poly);
 
-			if (WITH_HYBRID_RENDERING && !poly_should_clip(poly)) {
+			if (PVR_OPT_HYBRID() && !poly_should_clip(poly)) {
 				poly->zoffset = pvr.zoffset++;
 				poly_enqueue(PVR_LIST_PT_POLY, poly);
 			}
 		} else {
-			if (WITH_HYBRID_RENDERING && !poly_should_clip(poly))
+			if (PVR_OPT_HYBRID() && !poly_should_clip(poly))
 				list = PVR_LIST_PT_POLY;
 			else
 				list = PVR_LIST_TR_POLY;
@@ -3408,7 +3478,7 @@ static void process_gpu_commands(void)
 				pvr.draw_x1 = draw_x - pvr.start_x;
 				pvr.draw_y1 = draw_y - pvr.start_y;
 
-				if (WITH_CLIPPING) {
+				if (PVR_OPT_CLIP()) {
 					pvr.clip_test = pvr_clip_test();
 
 					if (!pvr.new_frame && draw_updated)
@@ -3428,7 +3498,7 @@ static void process_gpu_commands(void)
 				pvr.draw_x2 = draw_x - pvr.start_x;
 				pvr.draw_y2 = draw_y - pvr.start_y;
 
-				if (WITH_CLIPPING) {
+				if (PVR_OPT_CLIP()) {
 					pvr.clip_test = pvr_clip_test();
 
 					if (!pvr.new_frame && draw_updated)
@@ -3846,6 +3916,7 @@ static void reset_texture_pages(void)
 void hw_render_start(void)
 {
 	pvr.new_frame = 1;
+	pvr.tr_open = 0;
 	pvr.has_bg = 0;
 	pvr.zoffset = 3;
 	pvr.inval_counter_at_start = pvr.inval_counter;
@@ -4023,12 +4094,13 @@ void hw_render_stop(void)
 
 	if (unlikely(pvr.new_frame)) {
 		pvr_start_scene(PVR_LIST_TR_POLY);
-	} else if (WITH_HYBRID_RENDERING) {
+	} else if (PVR_OPT_HYBRID() && !pvr.tr_open) {
 		pvr_list_finish();
 		pvr_set_list(PVR_LIST_TR_POLY);
+		pvr.tr_open = 1;
 	}
 
-	if (WITH_HYBRID_RENDERING && likely(pvr.polybuf_cnt_start))
+	if (PVR_OPT_HYBRID() && likely(pvr.polybuf_cnt_start))
 		polybuf_render_from_start();
 
 	if (!WITH_24BPP) {
@@ -4040,19 +4112,19 @@ void hw_render_stop(void)
 			/* We'll most likely render the FB with different clip
 			 * parameters, so we need to send dummy polys to avoid
 			 * glitches. */
-			if (WITH_CLIPPING)
+			if (PVR_OPT_CLIP())
 				pvr_avoid_tile_clip_glitch();
 
 			pvr_render_fb();
 
-			if (WITH_CLIPPING)
+			if (PVR_OPT_CLIP())
 				pvr.old_flags |= POLY_NOCLIP;
 		}
 	}
 
 	/* Closing the TR list will reset the tile clip parameters, so we
 	 * need to send a dummy poly to avoid glitches. */
-	if (WITH_CLIPPING)
+	if (PVR_OPT_CLIP())
 		pvr_avoid_tile_clip_glitch();
 
 	pvr_list_finish();
@@ -4062,7 +4134,7 @@ void hw_render_stop(void)
 
 	pvr_render_outlines();
 
-	if (WITH_CLIPPING && pvr.nb_clips)
+	if (PVR_OPT_CLIP() && pvr.nb_clips)
 		pvr_render_modifier_volumes();
 
 	pvr_scene_finish();

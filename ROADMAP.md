@@ -29,9 +29,9 @@ dfsound falls back to the silent `nullsnd` driver (IRQs still fire).
 correctness baseline.
 
 The AICA driver now prebuffers one complete hardware buffer before playback,
-reclaims partial initialization on failure, and drains pending audio before
-discarding overflow. Its ring, callback buffer, and KOS scratch buffer total
-48 KiB of SH-4 RAM (previously 96 KiB). Full-driver host tests cover startup,
+reclaims partial initialization on failure, and drops the oldest samples when
+the mix outruns the ring so slow frames do not add latency. Its ring, callback
+buffer, and KOS scratch buffer total 48 KiB of SH-4 RAM (previously 96 KiB). Full-driver host tests cover startup,
 shutdown/reopening, silent fallback, and sample order. A standalone test of
 the production driver completed two stereo-tone passes in Flycast 2.7,
 including shutdown and reopening; the listener confirmed both sounded clear.
@@ -78,9 +78,10 @@ attacked:
 4. **Hybrid rendering.** Required for some effects, currently a source of
    glitches (MGS was reported to need it off).
    **Done in this branch:** a full TR poly buffer no longer drops primitives;
-   overflow emits into the current list instead. Remaining: audit PT vs TR
-   ordering when overflow happens mid-frame, and the poly buffer flush vs.
-   software fallback.
+   overflow closes PT, flushes the buffered TR list, and keeps drawing in
+   TR so punch-through order stays legal. Remaining: software fallback
+   when the scene still overflows after that flush, and titles that need
+   hybrid off (MGS).
 5. **Savestate draw-area restore** for E3–E5.
    **Done in this branch** via `sw_sync_ecmds()`.
 
@@ -98,14 +99,23 @@ Almost every user-facing setting is compile-time only.
 1. Add an Options screen with real toggles for renderer (PVR/Unai), 480p,
    hybrid rendering, and SPU backend, persisted to `/sd` or `/ide` when
    present, otherwise VMU/VMU-incompatible `/ram`.
+   **Partly done:** Settings persist last folder, AICA vs silent output,
+   rumble, analog, 480p, bilinear, hybrid rendering, clipping, and FSAA
+   when those features are compiled in. PVR vs Unai still needs a rebuild.
 2. In-game pause: START combo or a dedicated chord that does not eat PS1
    Start. From there: resume, reset, swap disc, save/load state, quit to
    menu.
 3. Savestates as a first-class feature, not only `WITH_BOOT_SSTATE`.
 4. Disc-image browser: remember last directory; show a spinner while
    `CheckCdrom()` runs (it can stall on bad dumps).
+   **Done in this branch (session memory, not persisted to SD/IDE):** the
+   browser reopens the last folder, restores the previous highlight when
+   going up, and paints a "Checking…" status for one frame before
+   `CheckCdrom()`. A true spinner still needs a second thread.
 5. Surface plugin open failures in the menu (CD-ROM vs. GPU vs. SPU), not
    only "could not load."
+   **Done in this branch:** failed plugin opens unwind cleanly and the
+   status line names CD-ROM, audio, or GPU.
 
 ## Priority 4 — performance
 
@@ -155,13 +165,29 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Build info screen shows compile-time flags and the controller map
 - Menu recovery for unreadable folders and credits; bounded navigation and
   consistent credit line spacing
-- Audio buffering preserves stereo pairs on overflow and fills underruns
-  with silence
+- Audio buffering preserves stereo pairs on overflow, drops the oldest mix when
+  the ring is full, and fills underruns with silence
 - VMU loading rejects unsupported ports and incomplete files; metadata title
   lengths, save-block indices, and icon counts are bounded
+- Menu chrome: title, location, hints, smear shadows, left-aligned
+  browser, volume names, paging with L/R, wrap-around, last folder
+- Settings screen: AICA vs silent SPU output, rumble, analog, 480p, bilinear,
+  hybrid/clipping/FSAA when compiled in, last folder; saved to `/sd`, `/ide`,
+  or `/ram`
+- Checking a disc paints a status line for a frame before `CheckCdrom()`
+- Plugin open failures name CD-ROM vs audio vs GPU and close what opened
+- Hybrid PVR overflow now closes PT and flushes TR instead of mixing lists;
+  bilinear filtering follows Settings rather than the compile-time flag
+- Controls: START combos and analog scaling are tested on the host; START+stick
+  centers the left analog; C/D pads enable a player-1 multitap; rumble stops
+  when disabled
+- Build info lists live Settings plus compile-time GPU/SPU/24-bit; a failed
+  plugin open after launch returns to the menu with that error; a missing
+  saved folder is repaired before the browser opens
 - Host regression checks cover audio buffering and VMU loading/metadata;
-  all five sanitizer suites pass in Docker, including PVR display blanking
-  and texture-cache update boundaries
+  sanitizer suites pass in Docker, including PVR display blanking, hybrid
+  enqueue policy, texture-cache update boundaries, menu path/error helpers,
+  and settings
 - Full Dreamcast build passes with GCC 15.1 and current KOS; compiler
   workarounds and the installed SDK are documented in `docs/docker-dreamcast.md`
 - Flycast reads the Street Fighter Alpha 3 CHD and identifies `SLUS00821`;
