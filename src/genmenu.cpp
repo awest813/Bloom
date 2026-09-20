@@ -265,6 +265,7 @@ MyMenu::MyMenu(std::shared_ptr<Font> fnt, const fs::path &path)
 	m_color1 = Color(1, 0.5f, 0.5f, 0.5f);
 	m_input_allowed = false;
 	m_pending_load = false;
+	m_wrap = true;
 
 	m_font = fnt;
 	m_exited = false;
@@ -355,7 +356,7 @@ void MyMenu::populate_dft()
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Credits", m_font_size,
 						 [&] {
-		myMenu->preparePopulate("/rd/credits", false, false);
+		preparePopulate("/rd/credits", false, false);
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Quit", m_font_size,
@@ -618,7 +619,7 @@ void MyMenu::populateOptions()
 	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
 
 	add_info(std::string("Build  ") + REV);
-	add_info("Build options (compile-time, not live toggles)");
+	add_info("Compile-time features. Live toggles are in Settings.");
 	add_info("");
 	add_info(std::string("GPU   ") + GPU_PLUGIN +
 		 (HARDWARE_ACCELERATED ? "  — faster, lower compatibility"
@@ -627,15 +628,23 @@ void MyMenu::populateOptions()
 		 (std::string(SPU_PLUGIN) == "AICA"
 		  ? "  — dfsound mix, AICA output"
 		  : "  — silent, SPU IRQs emulated"));
-	add_info(std::string("Resolution   ") + (WITH_480P ? "640x480" : "320x240"));
-	add_info(std::string("Hybrid rendering   ") + (WITH_HYBRID_RENDERING ? "on" : "off"));
-	add_info(std::string("FSAA   ") + (WITH_FSAA ? "on" : "off"));
-	add_info(std::string("24-bit framebuffer   ") + (WITH_24BPP ? "on" : "off"));
-	add_info(std::string("Bilinear filtering   ") + (WITH_BILINEAR ? "on" : "off"));
-	add_info(std::string("Pixel clipping   ") + (WITH_CLIPPING ? "on" : "off"));
+	add_info(std::string("24-bit framebuffer   ") + (WITH_24BPP ? "on" : "off")
+		 + "  (rebuild to change)");
 	add_info(std::string("CHD images   ") + (WITH_CHD ? "on" : "off"));
 	add_info(std::string("IDE   ") + (WITH_IDE ? "on" : "off") +
 		 "     SD   " + (WITH_SDCARD ? "on" : "off"));
+	add_info("");
+	add_info("Current Settings (next launch unless noted)");
+	{
+		char line[80];
+		unsigned int id;
+
+		for (id = 0; id < BLOOM_SET_COUNT; id++) {
+			bloom_settings_line((enum bloom_setting_id)id, line,
+					    sizeof(line));
+			add_info(line);
+		}
+	}
 	add_info("");
 	add_info("Controls");
 	add_info("A Cross          START+A Select");
@@ -648,7 +657,7 @@ void MyMenu::populateOptions()
 	add_info("START+A+B+X+Y    quit emulator");
 	add_info("START+D-pad Up   screenshot to /pc");
 	add_info("");
-	add_info("Change these with kos-ccmake. Press B to go back.");
+	add_info("GPU, SPU, and 24-bit need a rebuild. Press B to go back.");
 
 	anim = std::make_shared<AnimFadeIn>(false, m_xoffset, [&] {
 		m_top_scene->animRemoveAll();
@@ -725,7 +734,8 @@ void MyMenu::populateSettings()
 	add_info("");
 	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
 			: "Saved to /sd, /ide, or /ram when possible");
-	add_info("A toggles. Applies on the next game launch.");
+	add_info("A toggles. Analog and rumble apply now.");
+	add_info("Video and audio apply on the next game launch.");
 	add_info("");
 	add_info(std::string("GPU plugin     ") + GPU_PLUGIN +
 		 "  (rebuild to change)");
@@ -963,15 +973,19 @@ extern "C" bool runMenu(void)
 {
 	bool exited;
 	const char *saved = bloom_settings_get()->last_path;
+	const char *err;
 
-	if (saved[0])
-		last_browse = saved;
+	last_browse = usable_browse_path(saved);
 
 	// Load a font
 	auto fnt = std::make_shared<Font>("/rd/typewriter.txf");
 
 	// Create a menu
 	myMenu = std::make_shared<MyMenu>(fnt, fs::path(TOP_PATH));
+
+	err = emu_last_cd_error();
+	if (err && err[0])
+		myMenu->showError(err);
 
 	// Do the menu
 	myMenu->doMenu();

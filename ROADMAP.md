@@ -181,6 +181,9 @@ backstop; PVR stays the speed path; audio should not be blocked on either.
 - Controls: START combos and analog scaling are tested on the host; START+stick
   centers the left analog; C/D pads enable a player-1 multitap; rumble stops
   when disabled
+- Build info lists live Settings plus compile-time GPU/SPU/24-bit; a failed
+  plugin open after launch returns to the menu with that error; a missing
+  saved folder is repaired before the browser opens
 - Host regression checks cover audio buffering and VMU loading/metadata;
   sanitizer suites pass in Docker, including PVR display blanking, hybrid
   enqueue policy, texture-cache update boundaries, menu path/error helpers,

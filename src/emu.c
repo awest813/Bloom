@@ -148,14 +148,12 @@ bool emu_check_cd(const char *path)
 
 	if (ReloadCdromPlugin() < 0) {
 		last_cd_error = MENU_CD_ERR_CDR;
-		fprintf(stderr, "%s\n", emu_last_cd_error());
 		return false;
 	}
 
 	plugins = OpenPlugins();
 	if (plugins < 0) {
 		last_cd_error = menu_cd_error_from_open(plugins);
-		fprintf(stderr, "%s\n", emu_last_cd_error());
 		return false;
 	}
 
@@ -301,14 +299,19 @@ int main(int argc, char **argv)
 		if (HARDWARE_ACCELERATED)
 			pvr_renderer_init();
 
-		if (OpenPlugins() < 0) {
-			fprintf(stderr, "Could not open plugins\n");
-			if (HARDWARE_ACCELERATED)
-				pvr_renderer_shutdown();
-			pvr_shutdown();
-			if (WITH_GAME_PATH[0])
-				return 1;
-			continue;
+		{
+			int plugins = OpenPlugins();
+
+			if (plugins < 0) {
+				last_cd_error = menu_cd_error_from_open(plugins);
+				fprintf(stderr, "%s\n", emu_last_cd_error());
+				if (HARDWARE_ACCELERATED)
+					pvr_renderer_shutdown();
+				pvr_shutdown();
+				if (WITH_GAME_PATH[0])
+					return 1;
+				continue;
+			}
 		}
 
 		started = true;
