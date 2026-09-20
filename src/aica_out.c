@@ -111,8 +111,10 @@ static void aica_finish(void);
 
 static int aica_init(void)
 {
-	if (bloom_want_silent_audio())
+	if (bloom_want_silent_audio()) {
+		aica_finish();
 		return -1;
+	}
 
 	if (stream_initialized)
 		return 0;

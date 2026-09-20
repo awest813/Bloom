@@ -34,13 +34,14 @@ struct bloom_settings {
 	int bilinear;
 	int allow_480p;
 	int allow_aica;
+	int allow_bilinear;
 };
 
 void bloom_settings_reset(struct bloom_settings *s, int video_480p,
 			  int bilinear, int silent_audio, int allow_480p,
-			  int allow_aica);
+			  int allow_aica, int allow_bilinear);
 void bloom_settings_init(int video_480p, int bilinear, int silent_audio,
-			 int allow_480p, int allow_aica);
+			 int allow_480p, int allow_aica, int allow_bilinear);
 struct bloom_settings *bloom_settings_get(void);
 
 int bloom_settings_parse_line(struct bloom_settings *s, const char *line);
@@ -52,6 +53,7 @@ const char *bloom_settings_choose_path(int (*ok)(const char *path),
 
 int bloom_settings_load(void);
 int bloom_settings_save(void);
+int bloom_settings_flush(void);
 const char *bloom_settings_path(void);
 
 void bloom_settings_set_last_path(const char *path);

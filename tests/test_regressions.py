@@ -217,6 +217,11 @@ int main(void) {
     assert(menu_is_browser_root("sd"));
     assert(!menu_is_browser_root("rd"));
     assert(!menu_is_browser_root("credits"));
+    assert(menu_path_allowed("/"));
+    assert(menu_path_allowed("/sd/games"));
+    assert(!menu_path_allowed("/rd/credits"));
+    assert(!menu_path_allowed("/sd/../ide"));
+    assert(!menu_path_allowed("sd/games"));
     assert(strcmp(menu_volume_label("cd"), "CD-ROM") == 0);
     assert(strcmp(menu_volume_label("ide"), "Hard drive") == 0);
     assert(strcmp(menu_volume_label("other"), "other") == 0);
@@ -279,8 +284,10 @@ int main(void) {
     FILE *fp = tmpfile();
     char buf[256];
 
-    bloom_settings_reset(&s, 1, 0, 0, 1, 1);
+    bloom_settings_reset(&s, 1, 0, 0, 1, 1, 1);
     assert(s.rumble && s.analog && s.video_480p && !s.bilinear && !s.silent_audio);
+    assert(bloom_settings_parse_line(&s, "last_path=/etc/passwd") == 1);
+    assert(s.last_path[0] == 0);
     assert(bloom_settings_parse_line(&s, "last_path=/sd/games"));
     assert(bloom_settings_parse_line(&s, " silent_audio = on "));
     assert(bloom_settings_parse_line(&s, "# comment") == 0);
@@ -288,12 +295,12 @@ int main(void) {
     assert(strcmp(s.last_path, "/sd/games") == 0);
     assert(bloom_settings_write_to(&s, fp) == 0);
     rewind(fp);
-    bloom_settings_reset(&s, 1, 0, 0, 1, 1);
+    bloom_settings_reset(&s, 1, 0, 0, 1, 1, 1);
     assert(bloom_settings_load_from(&s, fp) >= 4);
     assert(s.silent_audio && strcmp(s.last_path, "/sd/games") == 0);
     fclose(fp);
 
-    bloom_settings_init(1, 0, 0, 1, 1);
+    bloom_settings_init(1, 0, 0, 1, 1, 1);
     bloom_settings_set_last_path("/ide/iso");
     assert(bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
     assert(bloom_want_silent_audio());
@@ -302,11 +309,12 @@ int main(void) {
     assert(bloom_settings_cycle(BLOOM_SET_RUMBLE));
     assert(!bloom_settings_rumble());
 
-    bloom_settings_init(0, 0, 1, 0, 0);
+    bloom_settings_init(0, 0, 1, 0, 0, 0);
     assert(bloom_want_silent_audio());
     assert(!bloom_settings_video_480p());
     assert(!bloom_settings_cycle(BLOOM_SET_SILENT_AUDIO));
     assert(!bloom_settings_cycle(BLOOM_SET_VIDEO_480P));
+    assert(!bloom_settings_cycle(BLOOM_SET_BILINEAR));
 
     readable = "/ide/bloom.cfg";
     assert(strcmp(bloom_settings_choose_path(is_readable, paths, 3),
@@ -316,7 +324,7 @@ int main(void) {
     (void)buf;
     return 0;
 }
-''', extra_sources=[ROOT / "src/settings.c"])
+''', extra_sources=[ROOT / "src/settings.c", ROOT / "src/menu_util.c"])
 
 
 if __name__ == "__main__":

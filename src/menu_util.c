@@ -41,6 +41,35 @@ bool menu_is_browser_root(const char *name)
 			|| !strcmp(name, "ide") || !strcmp(name, "sd"));
 }
 
+bool menu_path_allowed(const char *path)
+{
+	const char *p, *slash;
+	char first[8];
+	size_t n;
+
+	if (!path || path[0] != '/')
+		return false;
+
+	for (p = path; *p; p++) {
+		if (p[0] == '.' && p[1] == '.' &&
+		    (p[2] == '/' || p[2] == '\0') &&
+		    (p == path || p[-1] == '/'))
+			return false;
+	}
+
+	if (!path[1])
+		return true;
+
+	p = path + 1;
+	slash = strchr(p, '/');
+	n = slash ? (size_t)(slash - p) : strlen(p);
+	if (n == 0 || n >= sizeof(first))
+		return false;
+	memcpy(first, p, n);
+	first[n] = '\0';
+	return menu_is_browser_root(first);
+}
+
 const char *menu_volume_label(const char *name)
 {
 	if (!name)

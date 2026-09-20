@@ -133,15 +133,16 @@ int main(void)
     assert(!stream_started && ring_count() == 0);
     aica_feed(input, PREFILL_SAMPLES * 2);
     assert(starts == 2 && memcmp(played, input, sizeof(played)) == 0);
-    out_current->finish();
-    assert(shutdowns == 4 && destroys == 2);
 
     force_silent = 1;
     {
         int inits = init_calls;
+        int closed = destroys;
         SetupSound();
         assert(strcmp(out_current->name, "none") == 0);
         assert(init_calls == inits);
+        assert(destroys == closed + 1);
     }
+    force_silent = 0;
     return 0;
 }

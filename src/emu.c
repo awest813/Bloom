@@ -203,7 +203,8 @@ int main(int argc, char **argv)
 
 	bloom_settings_init(WITH_480P, WITH_BILINEAR,
 			    strcmp(SPU_PLUGIN, "Null") == 0, WITH_480P,
-			    strcmp(SPU_PLUGIN, "AICA") == 0);
+			    strcmp(SPU_PLUGIN, "AICA") == 0,
+			    HARDWARE_ACCELERATED);
 	emu_apply_video_settings();
 
 	input_init();

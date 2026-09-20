@@ -6,12 +6,14 @@
  */
 
 #include "settings.h"
+#include "menu_util.h"
 
 #include <ctype.h>
 #include <string.h>
 
 static struct bloom_settings g_settings;
 static char g_path[64];
+static int g_dirty;
 static const char *const k_default_paths[] = {
 	"/sd/bloom.cfg",
 	"/ide/bloom.cfg",
@@ -26,9 +28,15 @@ static int truthy(const char *v)
 
 static void strip(char *s)
 {
-	char *end;
-	while (*s && isspace((unsigned char)*s))
-		memmove(s, s + 1, strlen(s));
+	char *src, *end;
+
+	if (!s)
+		return;
+	src = s;
+	while (*src && isspace((unsigned char)*src))
+		src++;
+	if (src != s)
+		memmove(s, src, strlen(src) + 1);
 	end = s + strlen(s);
 	while (end > s && isspace((unsigned char)end[-1]))
 		*--end = '\0';
@@ -36,29 +44,36 @@ static void strip(char *s)
 
 void bloom_settings_reset(struct bloom_settings *s, int video_480p,
 			  int bilinear, int silent_audio, int allow_480p,
-			  int allow_aica)
+			  int allow_aica, int allow_bilinear)
 {
 	memset(s, 0, sizeof(*s));
 	s->rumble = 1;
 	s->analog = 1;
-	s->video_480p = video_480p && allow_480p;
-	s->bilinear = bilinear;
-	s->silent_audio = silent_audio || !allow_aica;
-	s->allow_480p = allow_480p;
-	s->allow_aica = allow_aica;
+	s->allow_480p = !!allow_480p;
+	s->allow_aica = !!allow_aica;
+	s->allow_bilinear = !!allow_bilinear;
+	s->video_480p = video_480p && s->allow_480p;
+	s->bilinear = bilinear && s->allow_bilinear;
+	s->silent_audio = silent_audio || !s->allow_aica;
 }
 
 void bloom_settings_init(int video_480p, int bilinear, int silent_audio,
-			 int allow_480p, int allow_aica)
+			 int allow_480p, int allow_aica, int allow_bilinear)
 {
 	g_path[0] = '\0';
+	g_dirty = 0;
 	bloom_settings_reset(&g_settings, video_480p, bilinear, silent_audio,
-			     allow_480p, allow_aica);
+			     allow_480p, allow_aica, allow_bilinear);
 	bloom_settings_load();
 	if (!g_settings.allow_480p)
 		g_settings.video_480p = 0;
 	if (!g_settings.allow_aica)
 		g_settings.silent_audio = 1;
+	if (!g_settings.allow_bilinear)
+		g_settings.bilinear = 0;
+	if (!menu_path_allowed(g_settings.last_path))
+		g_settings.last_path[0] = '\0';
+	g_dirty = 0;
 }
 
 struct bloom_settings *bloom_settings_get(void)
@@ -88,7 +103,10 @@ int bloom_settings_parse_line(struct bloom_settings *s, const char *line)
 	strip(val);
 
 	if (!strcmp(buf, "last_path")) {
-		snprintf(s->last_path, sizeof(s->last_path), "%s", val);
+		if (menu_path_allowed(val))
+			snprintf(s->last_path, sizeof(s->last_path), "%s", val);
+		else
+			s->last_path[0] = '\0';
 		return 1;
 	}
 	if (!strcmp(buf, "silent_audio")) {
@@ -212,7 +230,15 @@ int bloom_settings_save(void)
 		return -1;
 	}
 	fclose(fp);
+	g_dirty = 0;
 	return 0;
+}
+
+int bloom_settings_flush(void)
+{
+	if (!g_dirty)
+		return 0;
+	return bloom_settings_save();
 }
 
 const char *bloom_settings_path(void)
@@ -222,9 +248,12 @@ const char *bloom_settings_path(void)
 
 void bloom_settings_set_last_path(const char *path)
 {
-	if (!path)
+	if (!path || !menu_path_allowed(path))
 		path = "";
+	if (!strcmp(g_settings.last_path, path))
+		return;
 	snprintf(g_settings.last_path, sizeof(g_settings.last_path), "%s", path);
+	g_dirty = 1;
 }
 
 int bloom_settings_cycle(enum bloom_setting_id id)
@@ -234,20 +263,27 @@ int bloom_settings_cycle(enum bloom_setting_id id)
 		if (!g_settings.allow_aica)
 			return 0;
 		g_settings.silent_audio = !g_settings.silent_audio;
+		g_dirty = 1;
 		return 1;
 	case BLOOM_SET_RUMBLE:
 		g_settings.rumble = !g_settings.rumble;
+		g_dirty = 1;
 		return 1;
 	case BLOOM_SET_ANALOG:
 		g_settings.analog = !g_settings.analog;
+		g_dirty = 1;
 		return 1;
 	case BLOOM_SET_VIDEO_480P:
 		if (!g_settings.allow_480p)
 			return 0;
 		g_settings.video_480p = !g_settings.video_480p;
+		g_dirty = 1;
 		return 1;
 	case BLOOM_SET_BILINEAR:
+		if (!g_settings.allow_bilinear)
+			return 0;
 		g_settings.bilinear = !g_settings.bilinear;
+		g_dirty = 1;
 		return 1;
 	default:
 		return 0;
@@ -285,7 +321,10 @@ void bloom_settings_line(enum bloom_setting_id id, char *dst, size_t dst_sz)
 		break;
 	case BLOOM_SET_BILINEAR:
 		left = "Bilinear filter";
-		right = g_settings.bilinear ? "On" : "Off";
+		if (!g_settings.allow_bilinear)
+			right = "Off (this build)";
+		else
+			right = g_settings.bilinear ? "On" : "Off";
 		break;
 	default:
 		left = "Setting";
@@ -302,7 +341,7 @@ int bloom_want_silent_audio(void)
 
 int bloom_settings_bilinear(void)
 {
-	return g_settings.bilinear;
+	return g_settings.bilinear && g_settings.allow_bilinear;
 }
 
 int bloom_settings_rumble(void)

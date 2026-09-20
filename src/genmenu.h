@@ -200,6 +200,7 @@ private:
 	unsigned int m_font_size;
 	unsigned int m_xoffset;
 	unsigned int m_list_y;
+	bool m_wrap;
 	std::shared_ptr<Font> m_font;
 	bool m_exited;
 	bool m_pending_load;

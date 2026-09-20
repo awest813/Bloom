@@ -27,6 +27,7 @@ enum menu_cd_error {
 
 bool menu_is_cd_image_ext(const char *ext, bool with_chd);
 bool menu_is_browser_root(const char *name);
+bool menu_path_allowed(const char *path);
 const char *menu_volume_label(const char *name);
 const char *menu_cd_error_text(int code);
 void menu_truncate(char *dst, size_t dst_sz, const char *src, size_t max_chars);

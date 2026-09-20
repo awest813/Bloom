@@ -63,6 +63,23 @@ static std::string trunc_label(const std::string &text, size_t max_chars)
 	return buf;
 }
 
+static fs::path usable_browse_path(fs::path path)
+{
+	std::error_code error;
+
+	if (path.empty() || path == TOP_PATH)
+		return TOP_PATH;
+	if (!menu_path_allowed(path.c_str()))
+		return TOP_PATH;
+	if (fs::is_directory(path, error))
+		return path;
+	path = path.parent_path();
+	if (!path.empty() && path != TOP_PATH && menu_path_allowed(path.c_str())
+	    && fs::is_directory(path, error))
+		return path;
+	return TOP_PATH;
+}
+
 static std::shared_ptr<MyMenu> myMenu;
 
 MyLabel::MyLabel(std::shared_ptr<Font> fh, const std::string& text, int size,
@@ -307,6 +324,7 @@ void MyMenu::populate_dft()
 	m_font_size = MENU_ENTRY_SIZE;
 	m_xoffset = SCREEN_W / 2;
 	m_list_y = MAIN_LIST_Y;
+	m_wrap = true;
 
 	std::shared_ptr<AnimFadeIn> anim;
 
@@ -322,7 +340,7 @@ void MyMenu::populate_dft()
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Select CD image", m_font_size,
 						 [&] {
-		preparePopulate(last_browse, false, false);
+		preparePopulate(usable_browse_path(last_browse), false, false);
 	}));
 
 	addEntry(std::make_shared<MainMenuLabel>(m_font, "Settings", m_font_size,
@@ -357,7 +375,7 @@ void MyMenu::populate_dft()
 	m_path = TOP_PATH;
 	clearError();
 	setChrome("PlayStation emulator", "A Select");
-	persistBrowsePath();
+	bloom_settings_flush();
 }
 
 void MyMenu::populate(fs::path path, bool back, const std::string &select_name)
@@ -403,6 +421,7 @@ void MyMenu::populate(fs::path path, bool back, const std::string &select_name)
 		}
 	}
 	is_credits = path == "/rd/credits";
+	m_wrap = !is_credits;
 
 	while ((d = fs_readdir(fd))) {
 		std::string name = d->name;
@@ -542,6 +561,7 @@ void MyMenu::populateCredits(fs::path path)
 	m_font_size = CREDITS_ENTRY_SIZE;
 	m_xoffset = 36;
 	m_list_y = LIST_Y;
+	m_wrap = false;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
@@ -590,6 +610,7 @@ void MyMenu::populateOptions()
 	m_font_size = CREDITS_ENTRY_SIZE;
 	m_xoffset = 36;
 	m_list_y = LIST_Y;
+	m_wrap = false;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
@@ -644,10 +665,10 @@ void MyMenu::persistBrowsePath()
 {
 	std::string path = last_browse.string();
 
-	if (path.empty() || path == "/rd" || path.rfind("/rd/", 0) == 0)
+	if (!menu_path_allowed(path.c_str()))
 		return;
 	bloom_settings_set_last_path(path.c_str());
-	bloom_settings_save();
+	bloom_settings_flush();
 }
 
 void MyMenu::prepareSettings()
@@ -669,20 +690,18 @@ void MyMenu::populateSettings()
 	auto add_info = [&](const std::string &line) {
 		addEntry(std::make_shared<InfoLabel>(m_font, line, CREDITS_ENTRY_SIZE));
 	};
+	struct bloom_settings *opt = bloom_settings_get();
 
 	m_font_size = CREDITS_ENTRY_SIZE;
 	m_xoffset = 36;
 	m_list_y = LIST_Y;
+	m_wrap = false;
 
 	m_entries.clear();
 	m_top_scene->animRemoveAll();
 	m_top_scene->subRemoveAll();
 	m_top_scene->setTranslate(Vector(800.0f, m_list_y, 10));
 
-	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
-			: "Saved to /sd, /ide, or /ram when possible");
-	add_info("A toggles. Applies on the next game launch.");
-	add_info("");
 	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_SILENT_AUDIO,
 					       CREDITS_ENTRY_SIZE));
 	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_RUMBLE,
@@ -691,8 +710,13 @@ void MyMenu::populateSettings()
 					       CREDITS_ENTRY_SIZE));
 	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_VIDEO_480P,
 					       CREDITS_ENTRY_SIZE));
-	addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_BILINEAR,
-					       CREDITS_ENTRY_SIZE));
+	if (opt && opt->allow_bilinear)
+		addEntry(std::make_shared<ToggleLabel>(m_font, BLOOM_SET_BILINEAR,
+						       CREDITS_ENTRY_SIZE));
+	add_info("");
+	add_info(cfg[0] ? (std::string("Saved at  ") + cfg)
+			: "Saved to /sd, /ide, or /ram when possible");
+	add_info("A toggles. Applies on the next game launch.");
 	add_info("");
 	add_info(std::string("GPU plugin     ") + GPU_PLUGIN +
 		 "  (rebuild to change)");
@@ -819,7 +843,7 @@ void MyMenu::inputEvent(const Event & evt) {
 
 	switch(evt.key) {
 	case Event::KeyUp:
-		moveSelection(-1, true);
+		moveSelection(-1, m_wrap);
 		break;
 
 	case Event::KeyLeft:
@@ -828,7 +852,7 @@ void MyMenu::inputEvent(const Event & evt) {
 		break;
 
 	case Event::KeyDown:
-		moveSelection(1, true);
+		moveSelection(1, m_wrap);
 		break;
 	case Event::KeyRight:
 	case Event::KeyPgdn:
@@ -855,6 +879,7 @@ void MyMenu::inputEvent(const Event & evt) {
 void MyMenu::startExit() {
 	m_input_allowed = false;
 	m_pending_load = false;
+	persistBrowsePath();
 	// Apply some expmovers to the options.
 
 	for (unsigned int i = 0; i < m_entries.size(); i++) {
