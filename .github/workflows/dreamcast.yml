@@ -10,15 +10,18 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
+    # Pin to the SDK pair in docs/docker-dreamcast.md. Unpinned KOS HEAD
+    # dropped `uint16`, which this kos-ports libjpeg still uses.
     - uses: actions/checkout@v6
       with:
         repository: KallistiOS/KallistiOS
+        ref: 804b3195ebd1a06a27cc2b3a5eacf7a2429040a3
         path: kos
 
     - uses: actions/checkout@v6
       with:
         repository: pcercuei/kos-ports
-        ref: libpng-fix-bug
+        ref: f4faacc42faaf552625777b7709e871a827e1055
         path: kos-ports
 
     - name: install-dependencies
