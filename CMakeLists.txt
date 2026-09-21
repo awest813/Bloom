@@ -38,6 +38,8 @@ endif()
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/revision.h "#define REV \"${BLOOM_VERSION}\"\n")
 
 option(WITH_GDB "Enable support for GDB" OFF)
+option(WITH_PERF_LOG "Log presentation FPS and SH4/PVR timings once per second" OFF)
+option(WITH_CORE_PROFILE "Profile main-thread emulator subsystems (diagnostic overhead)" OFF)
 
 find_library(PARALLAX_LIBRARIES parallax REQUIRED)
 add_library(parallax STATIC IMPORTED)
@@ -190,17 +192,22 @@ target_compile_definitions(libpcsxcore PUBLIC
 	NO_SOCKET
 	DISABLE_MEM_LUTS
 	CODE_BUFFER_SIZE=${CODEBUF_SIZE}
-	LIGHTREC_PROG_NAME="/rd/dummy.elf"
 	USE_ASYNC_CDROM
 	USE_C11_THREADS
 	HAVE_CDROM
 	GPUSTATUS_POLLING_THRESHOLD=${WITH_GPUSTATUS_POLLING_THRESHOLD}
 )
 target_compile_options(libpcsxcore PRIVATE -Wno-format)
+set_property(SOURCE "${PCSX_REAL_DIR}/libpcsxcore/lightrec/plugin.c" APPEND
+	PROPERTY COMPILE_OPTIONS -include "${CMAKE_CURRENT_SOURCE_DIR}/src/lightrec-bloom.h")
 target_link_libraries(libpcsxcore PUBLIC lightrec zlib)
 
 set(GPU_PLUGIN PVR CACHE STRING "GPU plugin")
 set_property(CACHE GPU_PLUGIN PROPERTY STRINGS Unai PVR)
+option(WITH_PVR_SOFTWARE "Diagnostic PVR rasterizer: draw into PS1 VRAM and present it" OFF)
+if (WITH_PVR_SOFTWARE AND NOT GPU_PLUGIN STREQUAL PVR)
+	message(FATAL_ERROR "WITH_PVR_SOFTWARE requires GPU_PLUGIN=PVR")
+endif()
 
 if (GPU_PLUGIN STREQUAL Unai)
 	add_library(gpu STATIC
@@ -283,6 +290,8 @@ else()
 	message(FATAL_ERROR "SPU_PLUGIN must be Null or AICA (got '${SPU_PLUGIN}')")
 endif()
 
+option(WITH_LEGACY_KOS_MUTEX "Provide legacy mutex_lock for older GCC runtimes" OFF)
+
 add_executable(bloom
 	src/background.cpp
 	src/cdr.c
@@ -299,12 +308,28 @@ add_executable(bloom
 	src/plugins.c
 	src/settings.c
 )
+
+if (WITH_LEGACY_KOS_MUTEX)
+	target_sources(bloom PRIVATE src/kos_legacy_mutex.c)
+endif()
 # GCC can fail register allocation when contracting background arithmetic
 # into FMA instructions alongside its fixed SH-4 floating-point registers.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
 	set_source_files_properties(src/background.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif()
 target_link_libraries(bloom PUBLIC libpcsxcore gpu spu tsunami)
+if (WITH_CORE_PROFILE)
+	if (ENABLE_THREADED_RENDERER)
+		message(FATAL_ERROR "WITH_CORE_PROFILE requires the single-threaded renderer")
+	endif()
+	target_sources(bloom PRIVATE src/core_profile.c)
+	foreach(symbol do_cmd_list lightrec_execute lightrec_run_interpreter
+		GPUupdateLace SPUasync SPUwriteRegister SPUreadRegister
+		SPUwriteDMAMem SPUreadDMAMem SPUplayADPCMchannel SPUplayCDDAchannel
+		psxDma0 psxDma1 cdra_readTrack)
+		target_link_options(bloom PRIVATE "-Wl,--wrap=${symbol}")
+	endforeach()
+endif()
 
 option(WITH_CDROM_DMA "Read CD-ROM sectors using DMA" ON)
 set(WITH_CDROM_CACHE_SIZE 16 CACHE STRING "CD-ROM cache size in sectors")

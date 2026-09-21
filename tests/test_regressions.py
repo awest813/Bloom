@@ -138,6 +138,149 @@ def host_cc():
 
 
 class RegressionTests(unittest.TestCase):
+    def test_core_profile_wrappers_preserve_calls_and_nested_attribution(self):
+        profiler = (ROOT / "src/core_profile.c").read_text().replace(
+            "#include <arch/timer.h>", "")
+        source = (ROOT / "tests/core_profile_wrappers.c").read_text().replace(
+            "/* Production profiler is inserted here by test_regressions.py. */",
+            profiler)
+        self.compile_and_run(source)
+
+    def test_core_profile_excludes_nested_work_and_serial_output(self):
+        accounting = (ROOT / "src/core_profile.c").read_text().split("/* GNU ld")[0]
+        accounting = accounting.replace("#include <arch/timer.h>", "")
+        source = (ROOT / "tests/core_profile.c").read_text().replace(
+            "/* Production accounting is inserted here by test_regressions.py. */",
+            accounting)
+        self.compile_and_run(source)
+
+    def test_presentation_lifecycle_waits_before_texture_reuse_and_free(self):
+        source = (ROOT / "tests/platform_lifecycle.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/platform.c", ["dc_vout_open", "dc_vout_close", "dc_vout_flip"])
+            + functions("src/emu.c", ["emu_open_game_plugins"]))
+        for hardware in (0, 1):
+            with self.subTest(hardware=hardware):
+                self.compile_and_run(f"#define USE_PVR_RENDERER {hardware}\n" + source)
+
+    def test_pvr_state_restore_drains_draws_before_changing_state(self):
+        self.compile_and_run(r'''
+#include <assert.h>
+#include <stdint.h>
+static int state = 3, pending = 1, rendered, queued_state;
+static void process_gpu_commands(void) {
+    if (pending) { rendered = state; pending = 0; }
+    if (queued_state) { state = queued_state; queued_state = 0; }
+}
+static int do_cmd_list(uint32_t *cmds, int count, int *sum, int *last, int *cmd) {
+    assert(count == 6 && *last == 0);
+    assert(rendered == 3 && state == 3);
+    queued_state = cmds[0];
+    return count;
+}
+static void sw_sync_ecmds(uint32_t *cmds) { assert((uint32_t)state == cmds[1]); }
+''' + functions("src/pvr.c", ["renderer_sync_ecmds"]) + r'''
+int main(void) {
+    uint32_t restored[7] = {0, 9};
+    renderer_sync_ecmds(restored);
+    assert(rendered == 3 && state == 9 && !pending && !queued_state);
+    return 0;
+}
+''')
+
+    def test_pvr_software_visible_pixels_readback_and_texture_reuse(self):
+        source = (ROOT / "tests/pvr_software.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_texel",
+                                     "sw_plot", "sw_shade", "sw_edge", "sw_edge_bias", "sw_triangle_flat",
+                                     "sw_triangle", "sw_draw", "renderer_sync"]))
+        self.compile_and_run(source)
+
+    def test_pvr_draw_state_windows_coordinates_and_clipping(self):
+        source = (ROOT / "tests/pvr_draw_state.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/pvr.c", ["pvr_set_texture_page", "texwin_span", "texwin_set",
+                                     "texwin_range_fits", "psx_coord", "sw_sync_ecmds",
+                                     "draw_textured_sprite"]))
+        self.compile_and_run(source)
+
+    def test_scanout_copy_alignment_padding_and_vram_bounds(self):
+        source = (ROOT / "tests/scanout_copy.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/platform.c", ["rgb_24_to_16", "copy_scanout"]))
+        self.compile_and_run(source)
+
+    def test_presentation_stats_use_elapsed_time_and_reset_baselines(self):
+        source = (ROOT / "tests/platform_stats.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/platform.c", ["dc_vout_report_stats"]))
+        for logging, hardware in ((0, 1), (1, 1), (1, 0)):
+            with self.subTest(perf_logging=logging, hardware=hardware):
+                self.compile_and_run(
+                    f"#define WITH_PERF_LOG {logging}\n"
+                    f"#define HARDWARE_ACCELERATED {hardware}\n" + source)
+
+    def test_scanout_phase_stats_average_samples_and_reset(self):
+        source = (ROOT / "tests/scanout_stats.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/platform.c", ["scanout_report"]))
+        self.compile_and_run(source)
+
+    def test_pvr_sparse_texture_uploads_preserve_order_and_cache(self):
+        source = (ROOT / "tests/pvr_uploads.c").read_text().replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/pvr.c", ["pvr_perf_report", "update_texture"]))
+        for logging in (0, 1):
+            with self.subTest(perf_logging=logging):
+                self.compile_and_run(f"#define WITH_PERF_LOG {logging}\n" + source)
+
+    def test_software_scanout_enables_only_the_buffered_command_list(self):
+        source = r'''
+#include <assert.h>
+#include <stdbool.h>
+#define PVR_BINSIZE_0 0
+#define PVR_BINSIZE_8 8
+#define PVR_BINSIZE_16 16
+typedef struct {
+    int opb_sizes[5], vertex_buf_size, dma_enabled, fsaa_enabled, opb_overflow_count;
+} pvr_init_params_t;
+static int bloom_settings_clipping(void) { return 1; }
+static int bloom_settings_fsaa(void) { return 0; }
+''' + functions("src/emu.c", ["emu_pvr_params"]) + r'''
+int main(void) {
+    pvr_init_params_t params;
+    emu_pvr_params(&params);
+    assert(params.opb_sizes[0] != 0);
+    if (HARDWARE_ACCELERATED && !WITH_PVR_SOFTWARE) {
+        assert(!params.dma_enabled);
+        assert(params.opb_sizes[2] && params.opb_sizes[3] && params.opb_sizes[4]);
+    } else {
+        assert(params.dma_enabled);
+        /* Every enabled software list needs a buffer; only OP is bound. */
+        for (int i = 1; i < 5; ++i) assert(params.opb_sizes[i] == 0);
+    }
+    return 0;
+}
+'''
+        for hardware, software in ((0, 0), (1, 0), (1, 1)):
+            with self.subTest(hardware=hardware, software=software):
+                self.compile_and_run(f"#define HARDWARE_ACCELERATED {hardware}\n"
+                                     f"#define WITH_PVR_SOFTWARE {software}\n" + source)
+
+    def test_pvr_line_interpolation_matches_division_reference(self):
+        source = (ROOT / "tests/pvr_lines.c").read_text()
+        self.compile_and_run(source.replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            functions("src/pvr.c", ["sw_line_advance", "sw_line"])))
+
+    def test_pvr_flat_triangles_match_pixel_reference(self):
+        source = (ROOT / "tests/pvr_triangles.c").read_text()
+        production = functions("src/pvr.c", ["sw_texel", "sw_plot", "sw_shade",
+                                              "sw_edge", "sw_edge_bias", "sw_triangle_flat", "sw_triangle"])
+        self.compile_and_run(source.replace(
+            "/* Production functions are inserted here by test_regressions.py. */",
+            production))
+
     def test_pvr_texture_update_edges(self):
         self.compile_and_run(r'''
 #include <assert.h>
@@ -201,7 +344,7 @@ int main(void) {
     def test_pvr_blanked_display_writes_vram_without_hardware_queues(self):
         source = (ROOT / "tests/pvr_blanking.c").read_text()
         production = functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_draw",
-                                              "sw_line", "sw_draw_lines", "process_poly"])
+                                              "sw_line_advance", "sw_line", "sw_draw_lines", "process_poly"])
         self.compile_and_run(source.replace(
             "/* Production functions are inserted here by test_regressions.py. */",
             production))

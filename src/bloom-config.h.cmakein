@@ -22,8 +22,11 @@
 #cmakedefine01 WITH_IDE
 #cmakedefine01 WITH_SDCARD
 #cmakedefine01 HARDWARE_ACCELERATED
+#cmakedefine01 WITH_PVR_SOFTWARE
 #cmakedefine01 ENABLE_THREADED_RENDERER
 #cmakedefine01 WITH_GDB
+#cmakedefine01 WITH_PERF_LOG
+#cmakedefine01 WITH_CORE_PROFILE
 #cmakedefine01 WITH_CACHED_STDIO
 
 #cmakedefine01 WITH_FSAA

@@ -119,6 +119,8 @@ or BIOS file changes.
 
 See [the Docker toolchain notes](docs/docker-dreamcast.md) for the installed
 development environment and reproducible build commands.
+Windows users can build with the installed GCC 15.1 DreamSDK using the
+[DreamSDK build script and setup notes](docs/dreamsdk-windows.md).
 
 Required kos-ports: **Parallax** and **Tsunami** (menu).
 
@@ -136,6 +138,7 @@ That builds the defaults: PVR GPU, AICA audio, 480p, hybrid rendering, CHD, IDE,
 | Option | Default | Notes |
 | ------ | ------- | ----- |
 | `GPU_PLUGIN` | `PVR` | `Unai` for the software renderer |
+| `WITH_PVR_SOFTWARE` | OFF | PVR diagnostic mode: rasterize into PS1 VRAM and present it; requires `GPU_PLUGIN=PVR`, intended for compatibility comparisons |
 | `SPU_PLUGIN` | `AICA` | `Null` for silent dfsound (IRQs still emulated) |
 | `WITH_480P` | ON | 640×480; off is 320×240 |
 | `WITH_HYBRID_RENDERING` | ON | Turn off if a title glitches (reported for MGS) |
@@ -152,6 +155,8 @@ That builds the defaults: PVR GPU, AICA audio, 480p, hybrid rendering, CHD, IDE,
 | `WITH_MCD1_PATH` / `WITH_MCD2_PATH` | `/dev/mcd0`, `/dev/mcd1` | Memory card images |
 | `LOG_LEVEL` | Info | Lightrec log; `Debug` also links Binutils disassembly |
 | `WITH_GDB` | OFF | KallistiOS GDB stub |
+| `WITH_PERF_LOG` | OFF | Once-per-second presentation FPS, SH-4 busy percentage, and last PVR render time on stdout/serial |
+| `WITH_CORE_PROFILE` | OFF | Diagnostic subsystem wall-time percentages; requires the single-threaded renderer and adds timing overhead |
 | `WITH_FASTMEM` | OFF | Replace memcpy/memset with kos-ports fastmem |
 
 ## Building a `1ST_READ.BIN`
@@ -216,7 +221,24 @@ sprites and lines into PSX VRAM without accumulating hardware polygons,
 preserves drawing-area clipping, and resumes hardware rendering when enabled.
 Texture-cache tests cover every single-pixel VRAM update and rectangles ending
 at or crossing cache-block boundaries.
+Presentation statistics are checked across irregular frame intervals, output
+restarts, long uptimes, and builds with logging enabled or disabled.
 Sanitizer errors fail the test run.
+
+### Performance measurements
+
+Configure with `-DWITH_PERF_LOG=ON` for presentation FPS, SH-4 busy time,
+and last-frame PVR timing. PVR builds also report texture-upload and software
+primitive counts. Logging is off by default.
+
+Add `-DWITH_CORE_PROFILE=ON` for diagnostic percentages of time spent in PS1
+execution, drawing, audio, video, movie decoding, and disc reads. This adds
+timer overhead, requires single-threaded rendering, and is off by default.
+
+The software triangle, line, and texture-upload optimizations have reference
+regression checks and host microbenchmarks. See [performance measurement notes](docs/performance.md)
+for commands, results, and interpretation. Whole-game gains on Dreamcast
+hardware remain unmeasured.
 
 ### Flycast audio smoke test
 
@@ -240,6 +262,10 @@ Both passes completed in Flycast 2.7 during development, and the listener
 confirmed both rounds sounded clear. This checks initialization, stereo-tone
 playback, shutdown, and reopening with the emulated AICA. Real Dreamcast
 behavior and PlayStation mixer integration still require separate verification.
+
+The [audio audit notes](docs/audio-audit.md) document failure recovery, buffering
+checks, and remaining game-audio validation. Playback polling failures now stop
+the stream and keep emulation running silently until the audio output reopens.
 
 ## Credits
 

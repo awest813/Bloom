@@ -627,7 +627,8 @@ void MyMenu::populateOptions()
 	add_info("Compile-time features. Live toggles are in Settings.");
 	add_info("");
 	add_info(std::string("GPU   ") + GPU_PLUGIN +
-		 (HARDWARE_ACCELERATED ? "  — faster, lower compatibility"
+		 (WITH_PVR_SOFTWARE ? "  — software diagnostic mode"
+		  : HARDWARE_ACCELERATED ? "  — faster, lower compatibility"
 				       : "  — slower, higher compatibility"));
 	add_info(std::string("SPU   ") + SPU_PLUGIN +
 		 (std::string(SPU_PLUGIN) == "AICA"

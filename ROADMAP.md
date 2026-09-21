@@ -15,8 +15,10 @@ basic stereo audio are far enough along to boot titles. What is not:
 - There is **no in-game pause**, disc-swap UI, or savestate UI.
 - 3D is often far from full speed (community reports ~30 fps 2D / ~10 fps 3D).
 - Flycast has seen Street Fighter Alpha 3 reach the animated intro with PVR
-  and built-in BIOS. Title-screen, gameplay, in-game audio, and physical
-  Dreamcast remain unverified.
+  and built-in BIOS, and FFVI reach its publisher screen with PVR and
+  embedded OpenBIOS. Title-screen, gameplay, in-game audio, and physical
+  Dreamcast remain unverified. Both current GPU variants build; see the
+  Windows validation checkpoint in `docs/docker-dreamcast.md`.
 
 Settings persist last folder, silent vs AICA output, rumble, analog, 480p,
 bilinear, hybrid, clipping, and FSAA when those are compiled in. GPU plugin
@@ -69,13 +71,19 @@ PVR texture cache and Lightrec code buffer must invalidate on load.
 
 ### 4. PVR correctness that still drops games
 
+The current [video compatibility audit and implementation plan](docs/video-compatibility-plan.md)
+prioritizes safe presentation reads, consistent primitive state, exact texture
+windows, and PS1 VRAM coherence before visual tuning. It distinguishes confirmed
+code/probe findings from game-specific reports that still need reproduction.
+
 Host tests cover blanking, cache block masks, hybrid enqueue policy, and
 bilinear placement. Still open in the renderer:
 
 1. Render-to-texture / hot off-screen path (off-screen SW raster exists;
    the on-screen copy-back is the hole).
-2. After hybrid PT→TR flush, if the scene still overflows, fall back to
-   software for that primitive instead of dropping or mixing lists.
+2. Stress hybrid PT→TR transitions and hardware submission capacity. Current
+   code already flushes buffered TR and submits subsequent primitives directly;
+   any software fallback must preserve VRAM coherence and command ordering.
 3. Fixed-position vertical seams (SFA3 intro); 1:1 mirrored-sprite inset
    did not remove them.
 4. Titles that need hybrid **off** (MGS) — Settings already toggles this
@@ -84,7 +92,16 @@ bilinear placement. Still open in the renderer:
 **Touches:** `src/pvr.c` only, with Unai screenshot diffs. **Risk:** high;
 keep changes local to one primitive class per PR.
 
-### 5. Performance (only after a game is playable)
+### 5. Performance
+
+Initial optimizations cover solid triangles, exact incremental line interpolation,
+and sparse/full texture-upload dispatch. Reference regression checks preserve
+clipping, blending, mask behavior, shader inputs, and cache update order.
+`WITH_PERF_LOG` adds presentation FPS, SH-4 busy percentage, last-frame PVR
+timing, and PVR workload counters. The VMU FPS counter uses elapsed time.
+See [measurement notes](docs/performance.md) for host microbenchmarks and their
+limits. The next step is a repeatable playable scene and measurements that
+identify its bottleneck; native Dreamcast and whole-game gains are unmeasured.
 
 `pl_frame_limit()` is empty on purpose: sleeping while frames already miss
 16.7 ms makes the emulator slower.

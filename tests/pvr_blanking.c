@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#define WITH_PVR_SOFTWARE 0
 #define PSX_GPU_STATUS_BLANKING (1u << 23)
 #define PVR_OPT_HYBRID() 1
 #define PVR_OPT_CLIP() 1

@@ -11,6 +11,7 @@ int bloom_want_silent_audio(void) { return force_silent; }
 SPUConfig spu_config;
 static int fail_init, fail_alloc, starts, polls, destroys, shutdowns;
 static int sound_shutdowns, drain_on_poll, init_calls;
+static int poll_error;
 static snd_stream_callback_t callback;
 static int16_t played[PREFILL_SAMPLES];
 
@@ -51,6 +52,7 @@ int snd_stream_poll(snd_stream_hnd_t hnd)
     int got;
     assert(hnd == 0 && stream_started);
     polls++;
+    if (poll_error) return poll_error;
     if (drain_on_poll) {
         callback(hnd, drain_on_poll, &got);
         assert(got == drain_on_poll);
@@ -168,5 +170,52 @@ int main(void)
         assert(destroys == closed + 1);
     }
     force_silent = 0;
+
+    /* A batch larger than the ring retains complete, newest stereo frames. */
+    SetupSound();
+    {
+        int16_t large[RING_SAMPLES + 256];
+        const int count = sizeof(large) / sizeof(large[0]);
+        const int skipped = count - (RING_SAMPLES - 2);
+        for (int i = 0; i < count; i++) large[i] = (int16_t)(i - 8192);
+        aica_feed(large, sizeof(large));
+        assert(memcmp(played, large + skipped, sizeof(played)) == 0);
+        int offset = skipped + PREFILL_SAMPLES;
+        while (ring_count()) {
+            int amount = ring_count() > BOUNCE_SAMPLES ? BOUNCE_SAMPLES : ring_count();
+            aica_callback(0, amount * 2, &got);
+            assert(got == amount * 2);
+            assert(memcmp(bounce, large + offset, got) == 0);
+            offset += amount;
+        }
+        assert(offset == count);
+    }
+
+    /* Poll failures must close once, discard pending PCM, and never restart
+     * an invalid handle from feed's overflow or startup paths. */
+    for (int path = 0; path < 3; path++) {
+        if (path) {
+            SetupSound();
+            aica_feed(input, PREFILL_SAMPLES * 2);
+        }
+        int closed = destroys, stopped = shutdowns, started = starts;
+        if (path == 2) aica_feed(input, (RING_SAMPLES - 2) * 2);
+        poll_error = -(path + 1);
+        if (path == 0) aica_busy();
+        else if (path == 1) aica_feed(NULL, 0);
+        else aica_feed(input, 16);
+        assert(!stream_initialized && !stream_started && ring_count() == 0);
+        assert(stream_hnd == SND_STREAM_INVALID);
+        assert(destroys == closed + 1 && shutdowns == stopped + 1);
+        aica_feed(input, sizeof(input));
+        aica_busy();
+        aica_finish();
+        assert(starts == started && destroys == closed + 1);
+        poll_error = 0;
+    }
+    SetupSound();
+    aica_feed(input, PREFILL_SAMPLES * 2);
+    assert(stream_started && memcmp(played, input, sizeof(played)) == 0);
+    aica_finish();
     return 0;
 }

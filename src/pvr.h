@@ -17,6 +17,7 @@ void pvr_renderer_shutdown(void);
 
 void hw_render_start(void);
 void hw_render_stop(void);
+void pvr_perf_report(void);
 
 void invalidate_all_textures(void);
 

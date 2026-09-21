@@ -9,6 +9,9 @@
 SPUConfig spu_config;
 void out_register_aica(struct out_driver *driver);
 
+/* This standalone test always exercises audible output, without menu state. */
+int bloom_want_silent_audio(void) { return 0; }
+
 int main(void)
 {
     dbgio_dev_select("fb");

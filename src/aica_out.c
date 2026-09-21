@@ -32,6 +32,8 @@ _Static_assert(PREFILL_SAMPLES <= RING_SAMPLES - 2,
 
 static snd_stream_hnd_t stream_hnd = SND_STREAM_INVALID;
 static bool stream_initialized, stream_started;
+/* dfsound feeds and polls on the emulation thread. KOS invokes the callback
+ * synchronously from start/poll, so these ring indices need no locking. */
 static int ring_r, ring_w;
 static __attribute__((aligned(32))) int16_t ring[RING_SAMPLES];
 static __attribute__((aligned(32))) int16_t bounce[BOUNCE_SAMPLES];
@@ -180,10 +182,26 @@ static void aica_finish(void)
 	ring_r = ring_w = 0;
 }
 
+static bool aica_poll(void)
+{
+	int ret;
+
+	if (!stream_started)
+		return true;
+	ret = snd_stream_poll(stream_hnd);
+	if (ret >= 0)
+		return true;
+
+	/* Stop looping old AICA contents on failure. Keep emulation running
+	 * silently; the next output open can initialize a fresh stream. */
+	fprintf(stderr, "AICA: stream poll failed (%d); silencing output until reopen\n", ret);
+	aica_finish();
+	return false;
+}
+
 static int aica_busy(void)
 {
-	if (stream_started)
-		snd_stream_poll(stream_hnd);
+	aica_poll();
 
 	/* dfsound uses this only for tempo adjustment, not producer throttling. */
 	return ring_count() > RING_SAMPLES / 2;
@@ -208,8 +226,8 @@ static void aica_feed(void *data, int bytes)
 	}
 	/* Let playback consume queued audio, then drop the oldest leftover
 	 * so a slow frame does not make the mix lag further behind. */
-	if (samples > ring_space() && stream_started)
-		snd_stream_poll(stream_hnd);
+	if (samples > ring_space() && !aica_poll())
+		return;
 	space = ring_space();
 	if (samples > space)
 		ring_drop(samples - space);
@@ -225,8 +243,7 @@ poll:
 		stream_started = true;
 		snd_stream_volume(stream_hnd, 255);
 	}
-	if (stream_started)
-		snd_stream_poll(stream_hnd);
+	aica_poll();
 }
 
 void out_register_aica(struct out_driver *drv)

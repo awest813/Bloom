@@ -1,5 +1,60 @@
 # Docker Dreamcast development environment
 
+## Windows validation checkpoint (2026-09-20)
+
+The current Windows host has a running `bloom-dc` container, with KOS and
+kos-ports in the `bloom-sdk` volume at `/sdk`. It uses the same pinned KOS
+and kos-ports revisions below, but its compiler reports **GCC 17.0.0
+20260630 (experimental)**. Do not treat it as the GCC 15.1 environment
+described in the rest of this document.
+
+Validation of revision `d45ba6d`, with the shell line-ending fix:
+
+- All 13 host regression checks passed in `bloom-tests` with sanitizers.
+- Both PVR and Unai compiled and linked, and BIOS packaging completed.
+  Each ELF contains a 512 KiB `.bios` section.
+- Local FFVI images and matching ELFs are in `build/validation/`:
+  `bloom-ff6-pvr.cdi`, `bloom-pvr.elf`, `bloom-ff6-unai.cdi`, and
+  `bloom-unai.elf`. Both use `/cd/ff6.chd` and embedded OpenBIOS.
+- The PVR image passed the Dreamcast license screen in Flycast 2.7. After
+  an initially gray screen, a user-provided screenshot confirmed FFVI's
+  "Published by Square Electronic Arts L.L.C." startup screen. Flycast's
+  overlay showed 7.4 FPS; this does not establish native Dreamcast speed.
+  No title screen, gameplay, or game audio was verified. The Unai image
+  has not been runtime-tested.
+
+The first build failed at BIOS packaging because Windows checkout conversion
+gave `insert_bios.sh` a CRLF shebang. `.gitattributes` now requires LF for
+shell scripts. Existing checkouts may need their scripts checked out again
+after preserving any local edits.
+
+The existing container mounts an older worktree as `/workspace`, so compiling
+that mount does not validate the current checkout. This run built an isolated
+source snapshot under `/tmp/bloom-current-source`, with build directories
+`/tmp/bloom-current-pvr` and `/tmp/bloom-current-unai`, then copied artifacts
+to the current checkout. For another revision, refresh the source snapshot
+first. The base Docker image alone lacks CMake; these builds used the
+additional tools already installed in `bloom-dc`.
+
+The subsequent local performance builds are in `build/validation/`:
+`bloom-ff6-perf.cdi` adds the solid-triangle fast path and timing logs;
+`bloom-ff6-perf2.cdi` also adds incremental software lines;
+`bloom-ff6-perf3.cdi` adds sparse/full texture-upload dispatch and `PERF-PVR`
+workload counters. Matching debug executables are `bloom-perf.elf`,
+`bloom-perf2.elf`, and `bloom-perf3.elf`. All use the FFVI image already
+supplied on this host, embedded OpenBIOS, PVR, and `WITH_PERF_LOG=ON`.
+Host regression and cross-build checks passed; these performance images have
+not established a title-screen/gameplay or native-hardware speed improvement.
+
+The subsequent audit passed all 17 sanitizer regression checks and rebuilt PVR
+with performance logging enabled and Unai with it disabled in both Docker
+(GCC 17) and native DreamSDK (GCC 15.1). Native build outputs and instructions
+are described in [the DreamSDK guide](dreamsdk-windows.md). The existing CDI
+files above are earlier checkpoints; they were not repackaged during the audit.
+See [performance notes](performance.md) for the audited host benchmark results.
+
+## Earlier GCC 15.1 environment
+
 The local `bloom-dreamcast-sdk:gcc15.1` image and `bloom-gcc15` container
 contain an ARM64 Linux toolchain. Start
 Docker Desktop first. On macOS, if Docker is not on your PATH:

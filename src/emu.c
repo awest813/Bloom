@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 
 #include "bloom-config.h"
+#include "core_profile.h"
 #include "emu.h"
 #include "menu_util.h"
 #include "pvr.h"
@@ -177,20 +178,34 @@ bool emu_check_cd(const char *path)
 /* Copy of the default params, but FSAA/clip lists follow Settings. */
 static void emu_pvr_params(pvr_init_params_t *params)
 {
-	int clip = HARDWARE_ACCELERATED && bloom_settings_clipping();
+	bool hardware = HARDWARE_ACCELERATED && !WITH_PVR_SOFTWARE;
+	int clip = hardware && bloom_settings_clipping();
 
 	*params = (pvr_init_params_t){
 		.opb_sizes = {
 			PVR_BINSIZE_16,
 			PVR_BINSIZE_0,
-			HARDWARE_ACCELERATED ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
+			hardware ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
 			clip ? PVR_BINSIZE_8 : PVR_BINSIZE_0,
-			HARDWARE_ACCELERATED ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
+			hardware ? PVR_BINSIZE_16 : PVR_BINSIZE_0,
 		},
 		.vertex_buf_size = 768 * 1024,
+		.dma_enabled = !hardware,
 		.fsaa_enabled = bloom_settings_fsaa(),
 		.opb_overflow_count = 3,
 	};
+}
+
+/* PVR is initialized before this call. GPUopen invokes the presentation
+ * callbacks immediately, so they must be enabled before opening plugins. */
+static int emu_open_game_plugins(void)
+{
+	int ret;
+	started = true;
+	ret = OpenPlugins();
+	if (ret < 0)
+		started = false;
+	return ret;
 }
 
 int main(int argc, char **argv)
@@ -219,10 +234,10 @@ int main(int argc, char **argv)
 			.fsaa = WITH_FSAA,
 			.allow_480p = WITH_480P,
 			.allow_aica = strcmp(SPU_PLUGIN, "AICA") == 0,
-			.allow_bilinear = HARDWARE_ACCELERATED,
-			.allow_hybrid = HARDWARE_ACCELERATED && WITH_HYBRID_RENDERING,
-			.allow_clipping = HARDWARE_ACCELERATED && WITH_CLIPPING,
-			.allow_fsaa = HARDWARE_ACCELERATED && WITH_FSAA,
+			.allow_bilinear = HARDWARE_ACCELERATED && !WITH_PVR_SOFTWARE,
+			.allow_hybrid = HARDWARE_ACCELERATED && !WITH_PVR_SOFTWARE && WITH_HYBRID_RENDERING,
+			.allow_clipping = HARDWARE_ACCELERATED && !WITH_PVR_SOFTWARE && WITH_CLIPPING,
+			.allow_fsaa = HARDWARE_ACCELERATED && !WITH_PVR_SOFTWARE && WITH_FSAA,
 		};
 
 		bloom_settings_init(&boot);
@@ -300,7 +315,7 @@ int main(int argc, char **argv)
 			pvr_renderer_init();
 
 		{
-			int plugins = OpenPlugins();
+			int plugins = emu_open_game_plugins();
 
 			if (plugins < 0) {
 				last_cd_error = menu_cd_error_from_open(plugins);
@@ -314,7 +329,6 @@ int main(int argc, char **argv)
 			}
 		}
 
-		started = true;
 		EmuReset();
 
 		if (UsingIso() && !!strncmp(GetIsoFile(), "/cd", sizeof("/cd") - 1))
@@ -331,9 +345,16 @@ int main(int argc, char **argv)
 			printf("Loaded savestate %s\n", WITH_BOOT_SSTATE);
 
 		psxRegs.stop = 0;
+#if WITH_CORE_PROFILE
+		bloom_profile_reset();
+#endif
 
 		while (!psxRegs.stop)
 			psxCpu->Execute(&psxRegs);
+
+#if WITH_CORE_PROFILE
+		bloom_profile_stop();
+#endif
 
 		ClosePlugins();
 
