@@ -40,6 +40,13 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/revision.h "#define REV \"${BLOOM_VERSION
 option(WITH_GDB "Enable support for GDB" OFF)
 option(WITH_PERF_LOG "Log presentation FPS and SH4/PVR timings once per second" OFF)
 option(WITH_CORE_PROFILE "Profile main-thread emulator subsystems (diagnostic overhead)" OFF)
+option(WITH_CORE_LTO "Experiment with link-time optimization in emulator core libraries" OFF)
+option(WITH_LIGHT_FRAMESKIP "Use bounded light GPU frame skipping (experimental)" OFF)
+set(WITH_LIGHT_FRAMESKIP_PERIOD 4 CACHE STRING "Render N-1 GPU frames before one light skip (4-60)")
+if (NOT WITH_LIGHT_FRAMESKIP_PERIOD MATCHES "^[1-9][0-9]*$" OR
+    WITH_LIGHT_FRAMESKIP_PERIOD LESS 4 OR WITH_LIGHT_FRAMESKIP_PERIOD GREATER 60)
+	message(FATAL_ERROR "WITH_LIGHT_FRAMESKIP_PERIOD must be an integer from 4 to 60")
+endif()
 
 find_library(PARALLAX_LIBRARIES parallax REQUIRED)
 add_library(parallax STATIC IMPORTED)
@@ -110,6 +117,10 @@ target_include_directories(lightning PUBLIC
 	${LIGHTNING_REAL_DIR}/include
 )
 target_compile_definitions(lightning PRIVATE HAVE_MMAP=0 SH_HAS_FPU=0)
+option(WITH_SH4_UNROLLED_DIV "Experimental straight-line SH-4 integer division" OFF)
+if (WITH_SH4_UNROLLED_DIV)
+	target_compile_definitions(lightning PRIVATE BLOOM_SH4_UNROLLED_DIV=1)
+endif()
 target_compile_options(lightning PRIVATE -Wno-unused-function -Wno-unused-variable -Wno-parentheses -Wno-format)
 
 # Force these two options to get Bloom to build and work properly
@@ -198,6 +209,8 @@ target_compile_definitions(libpcsxcore PUBLIC
 	GPUSTATUS_POLLING_THRESHOLD=${WITH_GPUSTATUS_POLLING_THRESHOLD}
 )
 target_compile_options(libpcsxcore PRIVATE -Wno-format)
+target_compile_definitions(libpcsxcore PRIVATE BLOOM_LIGHT_FRAME_PERIOD=${WITH_LIGHT_FRAMESKIP_PERIOD})
+target_compile_definitions(libpcsxcore PRIVATE BLOOM_TIMER_POLL_FOLD=$<BOOL:${OPT_BOUNDED_IO_POLL}>)
 set_property(SOURCE "${PCSX_REAL_DIR}/libpcsxcore/lightrec/plugin.c" APPEND
 	PROPERTY COMPILE_OPTIONS -include "${CMAKE_CURRENT_SOURCE_DIR}/src/lightrec-bloom.h")
 target_link_libraries(libpcsxcore PUBLIC lightrec zlib)
@@ -210,6 +223,7 @@ if (WITH_PVR_SOFTWARE AND NOT GPU_PLUGIN STREQUAL PVR)
 endif()
 
 if (GPU_PLUGIN STREQUAL Unai)
+	option(WITH_UNAI_PROFILE "Count Unai polygon spans by pixel-driver flags" OFF)
 	add_library(gpu STATIC
 		${PCSX_REAL_DIR}/plugins/gpu_unai/gpulib_if.cpp
 	)
@@ -219,13 +233,20 @@ if (GPU_PLUGIN STREQUAL Unai)
 		GPU_UNAI_NO_OLD
 	)
 	target_link_libraries(gpu PUBLIC libpcsxcore)
+	if (WITH_UNAI_PROFILE)
+		target_compile_definitions(gpu PRIVATE BLOOM_UNAI_PROFILE)
+	endif()
 	set(HARDWARE_ACCELERATED OFF)
 elseif(GPU_PLUGIN STREQUAL PVR)
+	option(WITH_PVR_TA_TRACE "Trace PVR packet-format errors (diagnostic staging overhead)" OFF)
 	add_library(gpu STATIC
 		src/pvr.c
 	)
 	target_include_directories(gpu PRIVATE ${PCSX_REAL_DIR}/plugins)
 	target_link_libraries(gpu PUBLIC libpcsxcore)
+	if (WITH_PVR_TA_TRACE)
+		target_compile_definitions(gpu PRIVATE BLOOM_PVR_TA_TRACE)
+	endif()
 	set(HARDWARE_ACCELERATED ON)
 else()
 	message(FATAL_ERROR "GPU_PLUGIN must be Unai or PVR (got '${GPU_PLUGIN}')")
@@ -318,15 +339,44 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_
 	set_source_files_properties(src/background.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif()
 target_link_libraries(bloom PUBLIC libpcsxcore gpu spu tsunami)
+if (WITH_CORE_LTO)
+	if (WITH_CORE_PROFILE)
+		message(FATAL_ERROR "Core LTO can bypass profiler wrappers; disable WITH_CORE_PROFILE")
+	endif()
+	# Keep platform graphics assembly out of LTO: GCC 15's SH register
+	# allocator crashes when optimizing dc_vout_flip across translation units.
+	set_property(TARGET libpcsxcore lightrec lightning spu
+		PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+	# The cores exchange register banks through existing typed views.
+	foreach(core_target libpcsxcore lightrec lightning spu)
+		target_compile_options(${core_target} PRIVATE -fno-strict-aliasing)
+	endforeach()
+	target_link_options(bloom PRIVATE -flto=auto)
+endif()
+if (GPU_PLUGIN STREQUAL "PVR" AND WITH_PVR_TA_TRACE)
+	target_sources(bloom PRIVATE src/pvr_irq_trace.c)
+	foreach(symbol pvr_int_handler pvr_blank_polyhdr pvr_sq_set32 sq_lock)
+		target_link_options(bloom PRIVATE "-Wl,--wrap=${symbol}")
+	endforeach()
+endif()
 if (WITH_CORE_PROFILE)
+	target_compile_definitions(lightrec PRIVATE BLOOM_POLL_PROFILE=1)
+	target_compile_definitions(libpcsxcore PRIVATE BLOOM_POLL_PROFILE=1)
+	target_compile_definitions(libpcsxcore PRIVATE BLOOM_DMA_PROFILE=1)
 	if (ENABLE_THREADED_RENDERER)
 		message(FATAL_ERROR "WITH_CORE_PROFILE requires the single-threaded renderer")
 	endif()
 	target_sources(bloom PRIVATE src/core_profile.c)
-	foreach(symbol do_cmd_list lightrec_execute lightrec_run_interpreter
+	foreach(symbol do_cmd_list renderer_sync renderer_sync_ecmds
+		renderer_flush_queues renderer_update_caches lightrec_execute lightrec_run_interpreter
 		GPUupdateLace SPUasync SPUwriteRegister SPUreadRegister
 		SPUwriteDMAMem SPUreadDMAMem SPUplayADPCMchannel SPUplayCDDAchannel
-		psxDma0 psxDma1 cdra_readTrack)
+		psxDma0 psxDma1 cdra_readTrack lightrec_emulate_block
+		gteRTPS gteNCLIP gteOP gteDPCS gteINTPL gteMVMVA
+		gteNCDS gteCDP gteNCDT gteNCCS gteCC gteNCS gteNCT
+		gteSQR gteDCPL gteDPCT gteAVSZ3 gteAVSZ4 gteRTPT
+		gteGPF gteGPL gteNCCT
+		psxHwRead8 psxHwRead16 psxHwRead32 psxHwWrite8 psxHwWrite16 psxHwWrite32)
 		target_link_options(bloom PRIVATE "-Wl,--wrap=${symbol}")
 	endforeach()
 endif()

@@ -24,6 +24,10 @@
 #include "pvr.h"
 #include "settings.h"
 
+#ifdef BLOOM_PVR_TA_TRACE
+#include "pvr_trace.h"
+#endif
+
 #ifndef PVR_OPT_HYBRID
 #define PVR_OPT_HYBRID() bloom_settings_hybrid()
 #endif
@@ -309,6 +313,7 @@ static void texwin_set(uint32_t cmd);
 static void process_gpu_commands(void);
 
 static struct pvr_renderer pvr;
+
 
 static void pvr_set_texture_page(uint32_t value, uint32_t mask)
 {
@@ -956,7 +961,38 @@ static uint64_t get_block_mask(uint16_t umin, uint16_t umax,
 	uint64_t mask = 0, mask_horiz = 0;
 	uint16_t u, v;
 
-	/* 4x16 sub-blocks */
+
+    /* Four columns by sixteen rows. A pair of prefix masks replaces the
+     * per-row variable 64-bit shifts on a normal 256x256 texture page. */
+    if (umin <= 256 && umax <= 256 && vmin <= 256 && vmax <= 256) {
+        static const uint64_t rows[17] = {
+        UINT64_C(0x0000000000000000),
+        UINT64_C(0x000000000000000f),
+        UINT64_C(0x00000000000000ff),
+        UINT64_C(0x0000000000000fff),
+        UINT64_C(0x000000000000ffff),
+        UINT64_C(0x00000000000fffff),
+        UINT64_C(0x0000000000ffffff),
+        UINT64_C(0x000000000fffffff),
+        UINT64_C(0x00000000ffffffff),
+        UINT64_C(0x0000000fffffffff),
+        UINT64_C(0x000000ffffffffff),
+        UINT64_C(0x00000fffffffffff),
+        UINT64_C(0x0000ffffffffffff),
+        UINT64_C(0x000fffffffffffff),
+        UINT64_C(0x00ffffffffffffff),
+        UINT64_C(0x0fffffffffffffff),
+        UINT64_C(0xffffffffffffffff)
+        };
+        unsigned x0 = umin >> 6, x1 = (umax + 63) >> 6;
+        unsigned y0 = vmin >> 4, y1 = (vmax + 15) >> 4;
+        if (x0 >= x1 || y0 >= y1)
+            return 0;
+        uint32_t columns = ((1u << x1) - (1u << x0)) * UINT32_C(0x11111111);
+        return (rows[y1] ^ rows[y0]) & (((uint64_t)columns << 32) | columns);
+    }
+
+	/* Preserve the original path for coordinates outside a single page. */
 
 	for (u = umin & -64; u < umax; u += 64)
 		mask_horiz |= BIT(u / 64);
@@ -1193,6 +1229,28 @@ void renderer_notify_scanout_change(int x, int y)
 
 void renderer_notify_update_lace(int updated)
 {
+	if (updated || !gpu.frameskip.set || WITH_PVR_SOFTWARE
+	    || (gpu.status & PSX_GPU_STATUS_RGB24))
+		return;
+	/* PVR queues belong to the current scene. The software renderer's
+	 * frame_ready flag describes an older VRAM buffer, and would submit an
+	 * empty skipped scene while holding back the following rendered one. */
+	if (gpu.frameskip.active && gpu.frameskip.allow && pvr.new_frame) {
+		gpu.frameskip.frame_ready = 0;
+		pvr.draw_x1 += pvr.start_x - pvr.view_x;
+		pvr.draw_x2 += pvr.start_x - pvr.view_x;
+		pvr.draw_y1 += pvr.start_y - pvr.view_y;
+		pvr.draw_y2 += pvr.start_y - pvr.view_y;
+		pvr.start_x = pvr.view_x;
+		pvr.start_y = pvr.view_y;
+		pvr.draw_offt_x = pvr.draw_dx - pvr.start_x + gpu.screen.x;
+		pvr.draw_offt_y = pvr.draw_dy - pvr.start_y + gpu.screen.y;
+		pvr.clip_test = pvr.draw_x1 || pvr.draw_y1
+			|| pvr.draw_x2 != gpu.screen.hres
+			|| pvr.draw_y2 != gpu.screen.vres;
+	} else {
+		gpu.frameskip.frame_ready = 1;
+	}
 }
 
 void renderer_set_config(const struct rearmed_cbs *cbs)
@@ -1286,41 +1344,37 @@ static void pvr_add_clip(uint16_t zoffset)
  * textures shimmer.
  */
 static void uv_mirror_offset(const struct vertex_coords *coords,
-			     float *uoff, float *voff)
+                             float *uoff, float *voff)
 {
-	int x10 = coords[1].x - coords[0].x, y10 = coords[1].y - coords[0].y;
-	int x20 = coords[2].x - coords[0].x, y20 = coords[2].y - coords[0].y;
-	int u10 = coords[1].u - coords[0].u, u20 = coords[2].u - coords[0].u;
-	int v10 = coords[1].v - coords[0].v, v20 = coords[2].v - coords[0].v;
-	int det = x10 * y20 - x20 * y10;
-	int n[4] = {
-		u10 * y20 - u20 * y10,
-		x10 * u20 - x20 * u10,
-		v10 * y20 - v20 * y10,
-		x10 * v20 - x20 * v10,
-	};
-	unsigned int i;
+    int x10 = coords[1].x - coords[0].x, y10 = coords[1].y - coords[0].y;
+    int x20 = coords[2].x - coords[0].x, y20 = coords[2].y - coords[0].y;
+    int u10 = coords[1].u - coords[0].u, u20 = coords[2].u - coords[0].u;
+    int v10 = coords[1].v - coords[0].v, v20 = coords[2].v - coords[0].v;
+    int uy = x10 * u20 - x20 * u10;
+    int vx = v10 * y20 - v20 * y10;
+    int det;
 
-	if (det < 0) {
-		det = -det;
-		for (i = 0; i < 4; i++)
-			n[i] = -n[i];
-	}
+    /* Only axis-aligned UV derivatives need the mirrored-pixel offset.
+     * General 3D triangles avoid the remaining products entirely. */
+    if (uy && vx)
+        return;
+    det = x10 * y20 - x20 * y10;
+    if (!det)
+        return;
 
-	if (likely((n[0] | n[1] | n[2] | n[3]) >= 0 || det == 0))
-		return;
-
-	/* U reaches here shifted left by the texture depth (x1/x2/x4) */
-	if (n[1] == 0) {
-		if (n[0] == -det)
-			*uoff = 15.0f / 16.0f;
-		else if (n[0] == -2 * det)
-			*uoff = 30.0f / 16.0f;
-		else if (n[0] == -4 * det)
-			*uoff = 60.0f / 16.0f;
-	}
-	if (n[3] == -det && n[2] == 0)
-		*voff = 15.0f / 16.0f;
+    /* Negating both numerator and determinant leaves these equalities
+     * unchanged, so clockwise triangles need no normalization pass. */
+    if (!uy) {
+        int ux = u10 * y20 - u20 * y10;
+        if (ux == -det)
+            *uoff = 15.0f / 16.0f;
+        else if (ux == -2 * det)
+            *uoff = 30.0f / 16.0f;
+        else if (ux == -4 * det)
+            *uoff = 60.0f / 16.0f;
+    }
+    if (!vx && x10 * v20 - x20 * v10 == -det)
+        *voff = 15.0f / 16.0f;
 }
 
 __pvr
@@ -3247,6 +3301,15 @@ static void sw_triangle(const struct sw_vert *v0, const struct sw_vert *v1,
 	}
 }
 
+/* If both corner pixels of the drawing area are visible, its clipped
+ * primitives cannot require the off-screen software rasterizer. */
+static bool sw_hardware_only(void)
+{
+	return !WITH_PVR_SOFTWARE && !(gpu.status & PSX_GPU_STATUS_BLANKING)
+		&& overlap_draw_area(sw.x1, sw.y1, sw.x1 + 1, sw.y1 + 1)
+		&& overlap_draw_area(sw.x2 - 1, sw.y2 - 1, sw.x2, sw.y2);
+}
+
 /* Returns true if the primitive was off-screen and has been drawn here. */
 __noinline
 static bool sw_draw(const union PacketBuffer *pbuffer, uint32_t cmd)
@@ -3259,6 +3322,9 @@ static bool sw_draw(const union PacketBuffer *pbuffer, uint32_t cmd)
 	uint16_t clut = 0, texpage = pvr.gp1;
 	unsigned int i, nb;
 	uint32_t c;
+
+	if (sw_hardware_only())
+		return false;
 
 	if ((cmd >> 5) == 0x1) {
 		nb = (cmd & 0x08) ? 4 : 3;
@@ -3435,6 +3501,9 @@ static bool sw_draw_lines(const union PacketBuffer *pbuffer, uint32_t cmd,
 	int bx0, by0, bx1, by1, all_off = 1;
 	uint32_t c;
 	unsigned int i;
+
+	if (sw_hardware_only())
+		return false;
 
 	c = *buf++;
 	r0 = c & 0xff;

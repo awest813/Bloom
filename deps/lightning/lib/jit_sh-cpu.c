@@ -1256,12 +1256,22 @@ _divr(jit_state_t *_jit, jit_uint16_t r0, jit_uint16_t r1, jit_uint16_t r2)
 		MOVI(_R0, -2);
 		DIV0S(rn(reg), divisor);
 
+#if BLOOM_SH4_UNROLLED_DIV
+		/* Keep the real DIV1 sequence visible to SH-4 emulators instead of
+		 * matching their synthetic DIV32 shortcut. */
+		NOP();
+		for (unsigned int step = 0; step < 32; step++) {
+			ROTCL(r0);
+			DIV1(rn(reg), divisor);
+		}
+#else
 		ROTCL(r0);
 		DIV1(rn(reg), divisor);
 		ROTCL(_R0);
 		XORI(1);
 		BTS(-6);
 		TSTI(1);
+#endif
 
 		ROTCL(r0);
 		MOVI(_R0, 0);
@@ -1299,12 +1309,20 @@ _divr_u(jit_state_t *_jit, jit_uint16_t r0, jit_uint16_t r1, jit_uint16_t r2)
 		MOVI(_R0, -2);
 		DIV0U();
 
+#if BLOOM_SH4_UNROLLED_DIV
+		NOP();
+		for (unsigned int step = 0; step < 32; step++) {
+			ROTCL(r0);
+			DIV1(rn(reg), divisor);
+		}
+#else
 		ROTCL(r0);
 		DIV1(rn(reg), divisor);
 		ROTCL(_R0);
 		XORI(1);
 		BTS(-6);
 		TSTI(1);
+#endif
 
 		ROTCL(r0);
 

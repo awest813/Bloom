@@ -1,4 +1,10 @@
+#if BLOOM_SH4_UNROLLED_DIV
+#define JIT_INSTR_MAX 168
+#define BLOOM_DIV_EXTRA 118
+#else
 #define JIT_INSTR_MAX 116
+#define BLOOM_DIV_EXTRA 0
+#endif
     0,	/* data */
     0,	/* live */
     4,	/* align */
@@ -61,18 +67,18 @@
     12,	/* qmuli */
     6,	/* qmulr_u */
     12,	/* qmuli_u */
-    34,	/* divr */
-    40,	/* divi */
-    24,	/* divr_u */
-    30,	/* divi_u */
-    44,	/* qdivr */
-    50,	/* qdivi */
-    34,	/* qdivr_u */
-    40,	/* qdivi_u */
-    44,	/* remr */
-    50,	/* remi */
-    34,	/* remr_u */
-    40,	/* remi_u */
+    34 + BLOOM_DIV_EXTRA,	/* divr */
+    40 + BLOOM_DIV_EXTRA,	/* divi */
+    24 + BLOOM_DIV_EXTRA,	/* divr_u */
+    30 + BLOOM_DIV_EXTRA,	/* divi_u */
+    44 + BLOOM_DIV_EXTRA,	/* qdivr */
+    50 + BLOOM_DIV_EXTRA,	/* qdivi */
+    34 + BLOOM_DIV_EXTRA,	/* qdivr_u */
+    40 + BLOOM_DIV_EXTRA,	/* qdivi_u */
+    44 + BLOOM_DIV_EXTRA,	/* remr */
+    50 + BLOOM_DIV_EXTRA,	/* remi */
+    34 + BLOOM_DIV_EXTRA,	/* remr_u */
+    40 + BLOOM_DIV_EXTRA,	/* remi_u */
     4,	/* andr */
     10,	/* andi */
     4,	/* orr */

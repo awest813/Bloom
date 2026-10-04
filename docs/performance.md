@@ -1,5 +1,10 @@
 # Measuring performance
 
+For the source audit, prioritized experiments, benchmark protocol and acceptance
+criteria, see the [FPS improvement plan](fps-improvement-plan.md).
+Current 200 MHz measurements and audit outcomes are recorded in
+[stock-clock progress](dreamcast-performance-progress.md).
+
 Configure with `-DWITH_PERF_LOG=ON` to print Bloom's presentation rate,
 SH-4 busy percentage, and last PVR render time about once per second.
 FPS uses the actual elapsed interval, including slow frames. Only completed,
@@ -12,6 +17,63 @@ It can remain unchanged when no new rendering occurs. SH-4 busy percentage
 comes from KOS idle-thread accounting; it does not distinguish emulation,
 JIT compilation, audio mixing, or other CPU work. Flycast's own FPS overlay
 also includes the host's cost of emulating the Dreamcast.
+
+### Stock-clock diagnostic capture
+
+The current hardware-oriented target is 15–19 presented FPS, using Flycast
+at `Sh4Clock = 200` as a proxy until physical hardware is available. The
+[500 MHz experiment](flycast-performance-profile.md) is a separate result.
+
+With `WITH_CORE_PROFILE=ON`, `interp` measures first-pass interpreter fallback
+and `gte` measures wrapped geometry calls. `io` measures external calls to
+the six hardware-register read/write handlers. All three are included in the printed
+`ps1` percentage; do not add them to it. Nested calls charge their own bucket.
+Main-thread elapsed time includes preemption and measurement overhead.
+`present` counts completed non-blank presentations over the same interval as
+`vblank`, making the two rates directly comparable.
+
+For machine-readable diagnostic capture, obtain `bloom_profile_sample` from
+the exact ELF with `sh-elf-nm`. In a separate Flycast run directory, set
+`bloom_profile_address` to that symbol's address and `bloom_profile_output`
+to a new CSV path. Set `bloom_profile_parts = 10` for current builds (omit it
+for older nine-slot binaries), then load `scripts/flycast-profile-log.lua` before
+`scripts/flycast-test-controls.lua`. Never reuse an address from another
+build. The logger reads guest memory without modifying it, rejects unfinished
+or inconsistent intervals, and refuses to overwrite earlier results.
+
+CSV `ps1_us` is exclusive of `interpreter_us`, `geometry_us`, and `io_us`, unlike the
+inclusive printed percentage. All time columns sum to `duration_us`.
+I/O attribution excludes Lightrec's surrounding cycle synchronization and
+GPU polling loop. Nested drawing/audio work is charged to its own category.
+Frequent register calls add timer overhead; use this diagnostic to locate work,
+then validate optimizations with matching instrumentation or profiling disabled.
+Compute aggregate presentation FPS as `1e6 * sum(presentations) /
+sum(duration_us)` across complete intervals from the same stable scene.
+`host_time` is capture time, not the interval's emulated duration. Pauses,
+scene transitions, and host slowdown need separate labels.
+
+Set `bloom_test_status_file` to record accepted sidecar commands. An
+acknowledgment confirms the harness accepted an input; verify the resulting
+scene visually. Holds are measured in Dreamcast vblanks, not PS1 frames.
+For a separate automated instance, `bloom_test_exclusive_input = true`
+clears unrelated host button input while preserving scripted holds. Leave it
+off in a window used for manual gameplay.
+Whole-machine Flycast states include Bloom's executable and cannot compare
+different builds. Cold-boot each candidate or use compatible PS1-only states.
+
+Run the capture-tool checks with Lua 5.4 from the repository root:
+
+```sh
+lua tests/flycast_profile_log.lua
+lua tests/flycast_test_controls.lua
+python tests/profile_summary.py
+```
+
+Select only complete intervals inside a visually verified scene:
+
+```sh
+python scripts/summarize-profile.py run/profile.csv --first 226 --last 234 --scene "Station dialogue"
+```
 
 Software scanout (and hardware PVR's 24-bit display path) also prints
 `PERF-SCANOUT` every five seconds with average wait, pixel-copy, and command
@@ -148,6 +210,38 @@ Dreamcast performance.
 
 ## Host microbenchmarks
 
+### Empty Lightrec cleanup dispatch (September 24)
+
+Lightrec enters its cleanup queue after each execution interval. An atomic
+pending hint now avoids acquiring the queue mutex when there is no work.
+Queue mutations and the running-callback flag remain mutex-protected; a
+concurrent insertion can be processed by the next cleanup call. Allocation
+failure and duplicate entries do not publish new work.
+
+`python3 tests/benchmark_reaper.py` compares the production function against
+the same function with the empty-queue guard removed, alternating run order.
+It is an empty-call benchmark, not a whole-game FPS measurement. The September
+24 host run measured about 5.1 ns versus 0.9 ns per call. A DreamSDK GCC 15.1
+`-O2` build of the generated benchmark, running in Flycast at 200 MHz, measured
+about 1.96 microseconds versus 0.21 microseconds per call (five runs of 100,000
+calls). This is emulated SH-4 timing, not physical hardware validation.
+At 4,000 empty calls per second, that difference would save only about 7 ms
+per second; it does not explain a doubling of game FPS.
+
+Generate the standalone C benchmark for a native build with:
+
+```sh
+python3 tests/benchmark_reaper.py --emit build/reaper-benchmark.c
+kos-cc -O2 -std=gnu11 -I. build/reaper-benchmark.c -lpthread -o build/reaper-benchmark.elf
+```
+
+The regression checks empty dispatch, duplicate suppression, allocation
+failure, nested pauses, waiting for an active callback, insertion from a callback, concurrent producers,
+exactly-once cleanup, and draining on destruction. All 27 host sanitizer
+checks and the native Unai build passed. The older full-machine station
+checkpoint stalled at startup during an attempted restore; its restoration
+must not be treated as a working benchmark fixture.
+
 Build the test image as described in the README, then run from the repository
 root. Each script alternates implementation order and reports five-run medians:
 
@@ -189,3 +283,21 @@ single bits, pairs, full pages, half pages, and generated masks. Timing tests
 cover irregular intervals, output restarts, long uptimes, and logging on/off.
 These checks protect behavior within the tested routines; they do not establish
 PS1 hardware accuracy or title-screen/gameplay compatibility.
+
+## Experimental light frame skipping and presentation capture
+
+`-DWITH_LIGHT_FRAMESKIP=ON` selects a bounded gpulib policy that schedules
+one skip per four GPU frame decisions. It defaults OFF. Decisions follow GPU
+flips, and force/advice cannot cause consecutive skips in this mode. This can
+improve emulation throughput while reducing displayed FPS; it is not a promised
+speedup and must pass a per-game visual check. The first Monster Rancher 2 PVR
+test went black after the title; do not use that combination as a validated
+configuration.
+
+With `WITH_PERF_LOG=ON`, `bloom_frame_sample` exports presentation counts,
+elapsed milliseconds, guest vblanks, and cumulative skip-decision counters
+without enabling subsystem profiling. Use the exact ELF symbol address with
+`scripts/flycast-frame-log.lua`, then `scripts/summarize-frames.py` for an
+explicitly labeled contiguous range. Counts are callbacks, not proof of useful
+on-screen content. Verify the scene before and after each sample. The skip
+ratio excludes the first interval because its counters are cumulative.

@@ -2051,6 +2051,26 @@ static void rec_LH(struct lightrec_cstate *state, const struct block *block, u16
 static void rec_LHU(struct lightrec_cstate *state, const struct block *block, u16 offset)
 {
 	_jit_name(block->_jit, __func__);
+#if OPT_BOUNDED_IO_POLL && OPT_LOCAL_BRANCHES && OPT_SWITCH_DELAY_SLOTS && OPT_TRANSFORM_OPS && OPT_HANDLE_LOAD_DELAYS
+	const struct opcode *op = &block->opcode_list[offset];
+	u32 pc = block->pc + offset * 4;
+	/* A prefix can leave deferred opcode cycles at this read. The folded
+	 * timing model requires a block entry, before any prefix has executed. */
+	if (!offset && op->c.opcode == 0x95220000 && !op_flag_load_delay(op->flags) &&
+	    state->state->ops.is_poll_loop && state->state->ops.fold_poll_loop &&
+	    state->state->ops.is_poll_loop(state->state, pc)) {
+		struct regcache *cache = state->reg_cache;
+		/* The callback sees current inputs and can replace only v0/v1. */
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 2, true);
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 3, true);
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 4, false);
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 5, false);
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 7, false);
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 8, false);
+		lightrec_clean_reg_if_loaded(cache, block->_jit, 9, false);
+		call_to_c_wrapper(state, block, pc, C_WRAPPER_POLL);
+	}
+#endif
 	rec_load(state, block, offset, jit_code_ldxi_us, jit_code_bswapr_us, true);
 }
 

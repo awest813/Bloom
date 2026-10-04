@@ -1,6 +1,8 @@
 # Bloom roadmap
 
 Audit of `src/`, CMake, host tests, and open PRs as of 2026-09-20.
+FFVII gameplay and FPS priorities updated on 2026-09-21; see the
+[detailed FPS audit and plan](docs/fps-improvement-plan.md).
 Polish already landed (or in open PRs) is summarized at the bottom.
 Everything in **Major gaps** still blocks a usable everyday emulator.
 
@@ -14,11 +16,13 @@ basic stereo audio are far enough along to boot titles. What is not:
   and more accurate but needs a rebuild.
 - There is **no in-game pause**, disc-swap UI, or savestate UI.
 - 3D is often far from full speed (community reports ~30 fps 2D / ~10 fps 3D).
-- Flycast has seen Street Fighter Alpha 3 reach the animated intro with PVR
-  and built-in BIOS, and FFVI reach its publisher screen with PVR and
-  embedded OpenBIOS. Title-screen, gameplay, in-game audio, and physical
-  Dreamcast remain unverified. Both current GPU variants build; see the
-  Windows validation checkpoint in `docs/docker-dreamcast.md`.
+- FFVII now reaches playable field movement and completes the first guard
+  battle in Flycast with Unai, HLE and AICA enabled. The corrected video build
+  renders the full image and returns to the field at level 7. The opening
+  mission, audio-quality assessment and physical Dreamcast remain unverified.
+  Earlier PVR checks reached SFA3's intro and FFVI's publisher screen;
+  equivalent PVR gameplay validation remains open. See
+  [native validation notes](docs/dreamsdk-windows.md).
 
 Settings persist last folder, silent vs AICA output, rumble, analog, 480p,
 bilinear, hybrid, clipping, and FSAA when those are compiled in. GPU plugin
@@ -32,17 +36,19 @@ PVR stays the speed path.
 
 ### 1. Validate a real game on Flycast, then hardware
 
-**Why first:** later PVR and audio work is guesswork until SFA3 (or one 2D
-fighter) reaches a title screen with sound.
+**Progress:** FFVII with Unai has completed its first battle in Flycast.
+Next validate repeatable scenes, the remaining opening mission, equivalent
+PVR behavior and a second title, then repeat on hardware.
 
 - Rebuild with packed OpenBIOS (#7) and PVR; Flycast interpreter + serial.
 - Confirm title screen, at least one round of gameplay, and AICA output.
 - Diff the same scene on Unai.
 - Repeat on a 16 MiB Dreamcast if a disc or SD image can be written.
 
-**Touches:** packaging (`docs/docker-dreamcast.md`), not core code unless a
-blocker shows up. **Risk:** Flycast MMU/dynarec already asserts; interpreter
-is the known-good path.
+**Touches:** packaging and scene fixtures, with core fixes when a blocker
+appears. **Risk:** previous startup mutex and presentation stalls were fixed
+for the native FFVII dynarec run; other backends/titles and physical hardware
+still require independent validation.
 
 ### 2. In-game pause and quit to menu
 
@@ -100,18 +106,30 @@ clipping, blending, mask behavior, shader inputs, and cache update order.
 `WITH_PERF_LOG` adds presentation FPS, SH-4 busy percentage, last-frame PVR
 timing, and PVR workload counters. The VMU FPS counter uses elapsed time.
 See [measurement notes](docs/performance.md) for host microbenchmarks and their
-limits. The next step is a repeatable playable scene and measurements that
-identify its bottleneck; native Dreamcast and whole-game gains are unmeasured.
+limits. FFVII's Unai station scene now identifies PS1 execution and software
+drawing as the main buckets, at roughly 10 presented FPS. `WITH_CORE_PROFILE`
+provides optional subsystem wall-time attribution, with deferred-PVR and
+instrumentation caveats. The compiler-mode comparison was inconclusive.
+Physical Dreamcast gains remain unmeasured.
 
 `pl_frame_limit()` is empty on purpose: sleeping while frames already miss
 16.7 ms makes the emulator slower.
 
-1. Read the VMU FPS overlay (PVR vs SH-4 busy) on one 2D and one 3D title.
-2. Revisit the pcsx_rearmed bump (upstream bloom PR #7) only if BIOS boot
-   is still the bottleneck.
-3. Measure Lightrec code-buffer invalidation (`CODE_BUFFER_SIZE_MB`,
-   `src/mmap.c`) on long sessions.
-4. Add a frame limiter only when average frame time is under 16.7/20 ms.
+The [full FPS improvement plan](docs/fps-improvement-plan.md) defines the
+source audit, measurement protocol, speed-budget scenarios and acceptance gates:
+
+1. Establish repeatable guest-state/input replay across different builds.
+2. Separate JIT dispatch/fallback, GTE, event/I/O and Unai primitive costs.
+3. Test one measured execution or Unai fast path at a time, preserving results.
+4. Address movie decoding separately; advance PVR coherence before claiming
+   hardware-renderer speed gains.
+5. Validate long sessions, the opening mission, additional games and hardware.
+
+Keep threaded compilation on until a controlled comparison supports changing
+it. Do not substitute guest underclocking, missing drawing, muted audio or
+unverified register/ABI changes for a performance improvement. Frame limiting
+belongs after normal guest progression is achieved; presentation cadence alone
+does not determine the guest's timing budget.
 
 ### 6. Runtime GPU / 24-bit (hard; do not start early)
 

@@ -147,6 +147,7 @@ enum c_wrappers {
 	C_WRAPPER_MFC,
 	C_WRAPPER_MTC,
 	C_WRAPPER_CP,
+	C_WRAPPER_POLL,
 	C_WRAPPERS_COUNT,
 };
 
@@ -176,6 +177,9 @@ struct lightrec_state {
 	u32 exit_flags;
 	u32 old_cycle_counter;
 	u32 cycles_per_op;
+#if OPT_DIRECT_HW_READ
+	_Bool direct_hw_read;
+#endif
 	void *c_wrapper;
 	struct block *dispatcher;
 	void *c_wrappers[C_WRAPPERS_COUNT];

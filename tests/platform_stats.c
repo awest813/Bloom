@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include "src/frame_stats.h"
+
+volatile struct bloom_frame_sample bloom_frame_sample;
+static uint32_t frame_counter, gpu_light_frameskip_stats[2];
+#if WITH_PERF_LOG
+static uint32_t stats_guest_frames;
+#endif
 
 static unsigned int frames, screen_w = 320, screen_h = 240, screen_bpp = 16;
 static uint64_t timer_ms, last_cputime, last_idletime;
@@ -48,17 +55,32 @@ int main(void) {
     for (unsigned int i = 1; i <= 50; i++) {
         now = i * 20;
         idle = i * 5;
+        frame_counter = i * 2;
         dc_vout_report_stats();
         assert(reports == (i == 50));
     }
     expect(50.0, 75.0);
+#if WITH_PERF_LOG
+    assert(bloom_frame_sample.sequence == 2);
+    assert(bloom_frame_sample.duration_ms == 1000);
+    assert(bloom_frame_sample.presentations == 50);
+    assert(bloom_frame_sample.vblanks == 100);
+#endif
 
     /* A delayed sample reports rate, not the raw number of callbacks. */
     now += 100; dc_vout_report_stats();
     now += 100; dc_vout_report_stats();
+    gpu_light_frameskip_stats[0] = 3; gpu_light_frameskip_stats[1] = 12;
     now += 1300; idle += 750; dc_vout_report_stats();
     assert(reports == 2);
     expect(2.0, 50.0);
+#if WITH_PERF_LOG
+    assert(bloom_frame_sample.duration_ms == 1500);
+    assert(bloom_frame_sample.presentations == 3);
+    assert(bloom_frame_sample.vblanks == 0);
+    assert(bloom_frame_sample.skip_decisions == 3);
+    assert(bloom_frame_sample.total_decisions == 12);
+#endif
 
     /* A reopened output must establish new baselines, including long uptimes. */
     stats_started = false; frames = 0;

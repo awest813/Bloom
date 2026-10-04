@@ -50,6 +50,14 @@
 #include "gpu_fixedpoint.h"
 
 // Inner loop driver instantiation file
+#ifdef BLOOM_UNAI_PROFILE
+// Diagnostic cumulative counters: requested polygon-span pixels, before
+// transparency/mask rejection. No timer calls are added to the pixel loops.
+extern "C" {
+u32 bloom_unai_span_calls[1024];
+u32 bloom_unai_span_pixels[1024];
+}
+#endif
 #include "gpu_inner.h"
 
 // GPU internal image drawing functions

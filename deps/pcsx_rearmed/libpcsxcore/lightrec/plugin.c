@@ -251,9 +251,18 @@ static u32 hw_read_word(struct lightrec_state *state,
 		if (diff > 0
 		    && diff < GPUSTATUS_POLLING_THRESHOLD
 		    && diff == old_cycle - oldold_cycle) {
+			/* The first read flushed pending GPU commands. No guest work
+			 * runs inside this loop; only the cycle-dependent bits change.
+			 * Keep every original sample and the interrupt boundary. */
+			u32 status = SWAP32(HW_GPU_STATUS);
+			u32 idle_after = psxRegs.gpuIdleAfter;
+			u32 hsync = hSyncCount;
+			if (val == old_gpusr)
+				psxRegs.cycle = gpuConstantPollEnd(status, psxRegs.cycle,
+					psxRegs.next_interupt, diff, hsync);
 			while (psxRegs.next_interupt > psxRegs.cycle && val == old_gpusr) {
 				psxRegs.cycle += diff;
-				val = psxHwRead32(mem);
+				val = gpuStatusAtCycle(status, psxRegs.cycle, idle_after, hsync);
 			}
 		}
 
@@ -453,11 +462,76 @@ static bool lightrec_can_hw_direct(u32 kaddr, bool is_write, u8 size)
 	}
 }
 
+#if BLOOM_TIMER_POLL_FOLD
+#include "timer-poll.h"
+#if BLOOM_POLL_PROFILE
+extern volatile u32 bloom_poll_diagnostic[24];
+#endif
+static bool is_timer_poll_loop(struct lightrec_state *state, u32 pc)
+{
+	(void)state;
+	bool match = bloom_timer_poll_pattern(
+		(uintptr_t)lightrec_map[PSX_MAP_KERNEL_USER_RAM].address,
+		lightrec_map[PSX_MAP_KERNEL_USER_RAM].length, pc);
+#if BLOOM_POLL_PROFILE
+	if (match)
+		bloom_poll_diagnostic[2]++;
+#endif
+	return match;
+}
+static u32 fold_timer_poll_loop(struct lightrec_state *state, u32 pc,
+			       u32 budget, u32 cycles_per_opcode)
+{
+	struct lightrec_registers *regs = lightrec_get_registers(state);
+	u32 consumed;
+#if BLOOM_POLL_PROFILE
+	bloom_poll_diagnostic[4]++;
+	if (!(pc & 0x60000003) && (pc & 0x1fffffff) < 0x200000 &&
+	    psxMu32(pc & 0x1fffffff) == 0x95220000) {
+		bloom_poll_diagnostic[9] = budget;
+		bloom_poll_diagnostic[10] = cycles_per_opcode;
+		bloom_poll_diagnostic[11] = rcnts[2].mode;
+		bloom_poll_diagnostic[12] = rcnts[2].rate;
+		bloom_poll_diagnostic[13] = psxRegs.cycle;
+		bloom_poll_diagnostic[14] = rcnts[2].cycleStart;
+		bloom_poll_diagnostic[15] = psxHu32(0x1070);
+		bloom_poll_diagnostic[16] = regs->gpr[4];
+		bloom_poll_diagnostic[17] = regs->gpr[5];
+		bloom_poll_diagnostic[18] = regs->gpr[7];
+		bloom_poll_diagnostic[19] = regs->gpr[8];
+		bloom_poll_diagnostic[20] = regs->gpr[9];
+	}
+#endif
+	if (block_stepping || ram_disabled || has_interrupt()) {
+#if BLOOM_POLL_PROFILE
+		bloom_poll_diagnostic[5]++;
+#endif
+		return 0;
+	}
+	consumed = bloom_timer_poll((uintptr_t)lightrec_map[PSX_MAP_KERNEL_USER_RAM].address,
+		lightrec_map[PSX_MAP_KERNEL_USER_RAM].length, pc, regs->gpr,
+		psxRegs.cycle + lightrec_current_cycle_count(state) / 1024,
+		rcnts[2].cycleStart, rcnts[2].rate, &rcnts[2].mode,
+		psxHu32(0x1070), budget, cycles_per_opcode);
+#if BLOOM_POLL_PROFILE
+	if (consumed) {
+		bloom_poll_diagnostic[6]++;
+		bloom_poll_diagnostic[7] += consumed >> 10;
+	}
+#endif
+	return consumed;
+}
+#endif
+
 static const struct lightrec_ops lightrec_ops = {
 	.cop2_op = cop2_op,
 	.enable_ram = lightrec_enable_ram,
 	.hw_direct = lightrec_can_hw_direct,
 	.code_inv = LIGHTREC_CODE_INV ? lightrec_code_inv : NULL,
+#if BLOOM_TIMER_POLL_FOLD
+	.is_poll_loop = is_timer_poll_loop,
+	.fold_poll_loop = fold_timer_poll_loop,
+#endif
 };
 
 static int lightrec_plugin_init(void)

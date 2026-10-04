@@ -48,6 +48,40 @@ typedef struct GPUFreeze {
 // TODO: handle com too
 #define PSXGPU_TIMING_BITS (PSXGPU_LCF | PSXGPU_nBUSY | PSXGPU_FIELD)
 
+/* Timing-dependent portion of a synchronized status read. During a polling
+ * burst no guest command or event runs between reads, so the plugin status
+ * can be synchronized once while these bits follow each sampled cycle. */
+static inline uint32_t gpuStatusAtCycle(uint32_t status, uint32_t cycle,
+	uint32_t idle_after, unsigned int hsync)
+{
+	status |= ((int32_t)(idle_after - cycle) >> 31) & PSXGPU_nBUSY;
+	if (hsync < 240 && (status & PSXGPU_ILACE_BITS) != PSXGPU_ILACE_BITS)
+		status |= PSXGPU_LCF & (cycle << 20);
+	return status;
+}
+
+/* Only skip a burst when BOTH cycle-dependent bits are constant. Preserve
+ * the original sampling grid, including its possible interrupt overshoot.
+ * Near wraparound, retain the original loop instead of assuming ordering. */
+static inline uint32_t gpuConstantPollEnd(uint32_t status, uint32_t cycle,
+	uint32_t interrupt, uint32_t stride, unsigned int hsync)
+{
+	uint32_t distance, advance;
+	if (!(status & PSXGPU_nBUSY) ||
+	    (!(status & PSXGPU_LCF) && hsync < 240 &&
+	     (status & PSXGPU_ILACE_BITS) != PSXGPU_ILACE_BITS))
+		return cycle;
+	if (!stride || stride > UINT32_MAX / 8 || interrupt <= cycle)
+		return cycle;
+	distance = interrupt - cycle;
+	if (distance <= stride * 8 || distance > UINT32_MAX - (stride - 1))
+		return cycle;
+	advance = ((distance + stride - 1) / stride) * stride;
+	if (advance > UINT32_MAX - cycle)
+		return cycle;
+	return cycle + advance;
+}
+
 #define gpuSyncPluginSR() { \
 	HW_GPU_STATUS &= SWAP32(PSXGPU_TIMING_BITS); \
 	HW_GPU_STATUS |= SWAP32(GPU_readStatus() & ~PSXGPU_TIMING_BITS); \

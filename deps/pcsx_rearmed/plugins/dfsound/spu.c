@@ -543,8 +543,40 @@ static noinline int name(int *dst, \
   else InterpolateDown(sb, sinc); /* --> else down */ \
   dst[ns] = sb->SB[29]
 
-make_do_samples(do_samples_nointerp, , fa = sb->SB[29],
-   , dst[ns] = fa, sb->SB[29] = fa)
+/* Keep the phase and sample cursor in registers between ADPCM blocks. The
+ * generic interpolation loop updates both through pointers for every input
+ * sample; on SH-4 these alias the decoder's state and force memory traffic.
+ * Publish before calling the decoder, then reload, preserving its view of
+ * the cursors (including callbacks that update them). */
+static noinline int do_samples_nointerp(int *dst,
+ int (*decode_f)(void *context, int ch, int *SB), void *ctx,
+ int ch, int ns_to, sample_buf *sb, int sinc, int *spos, int *sbpos)
+{
+ int ns, d, fa = sb->SB[29], ret = ns_to;
+ int phase = *spos, pos = *sbpos;
+
+ for (ns = 0; ns < ns_to; ns++) {
+  phase += sinc;
+  while (phase >= 0x10000) {
+   fa = sb->SB[pos++];
+   if (pos >= 28) {
+    *sbpos = 0;
+    *spos = phase;
+    d = decode_f(ctx, ch, sb->SB);
+    phase = *spos;
+    pos = *sbpos;
+    if (d && ns < ret)
+     ret = ns;
+   }
+   phase -= 0x10000;
+  }
+  dst[ns] = fa;
+ }
+ *spos = phase;
+ *sbpos = pos;
+ sb->SB[29] = fa;
+ return ret;
+}
 make_do_samples(do_samples_simple, , ,
   simple_interp_store, simple_interp_get, )
 make_do_samples(do_samples_gauss, , ,

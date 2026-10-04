@@ -61,6 +61,18 @@ static irq_func * const irq_funcs[] = {
 	[PSXINT_RCNT] = psxRcntUpdate,
 };
 
+static int irq_test_cpu(psxCP0Regs *cp0)
+{
+	cp0->n.Cause &= ~0x400;
+	if (psxHu32(0x1070) & psxHu32(0x1074))
+		cp0->n.Cause |= 0x400;
+	if (((cp0->n.Cause | 1) & cp0->n.SR & 0x401) == 0x401) {
+		psxException(0, 0, cp0);
+		return 1;
+	}
+	return 0;
+}
+
 void irq_test(psxCP0Regs *cp0)
 {
 	psxRegisters *regs = cp0TOpsxRegs(cp0);
@@ -77,23 +89,41 @@ void irq_test(psxCP0Regs *cp0)
 		}
 	}
 
-	cp0->n.Cause &= ~0x400;
-	if (psxHu32(0x1070) & psxHu32(0x1074))
-		cp0->n.Cause |= 0x400;
-	if (((cp0->n.Cause | 1) & cp0->n.SR & 0x401) == 0x401)
-		psxException(0, 0, cp0);
+	irq_test_cpu(cp0);
 }
 
 void gen_interupt(psxCP0Regs *cp0)
 {
 	psxRegisters *regs = cp0TOpsxRegs(cp0);
+	u32 cycle = regs->cycle, irq, bits;
+	s32 minimum = PSXCLK;
 
 	evprintf("  +ge %08x, %u->%u (%d)\n", regs->pc, regs->cycle,
 		regs->next_interupt, regs->next_interupt - regs->cycle);
 
-	irq_test(cp0);
-	schedule_timeslice(regs);
+	/* HLE callbacks often enter after only one guest block, before any event
+	 * is due. Find the next deadline while checking for due work, avoiding a
+	 * second scan in that case. Preserve the original callback order and
+	 * rescan after callbacks/exceptions, which may modify events or cycles. */
+	for (irq = 0, bits = regs->interrupt; bits; irq++, bits >>= 1) {
+		s32 delta;
+		if (!(bits & 1))
+			continue;
+		if ((s32)(cycle - regs->event_cycles[irq]) >= 0) {
+			irq_test(cp0);
+			schedule_timeslice(regs);
+			goto done;
+		}
+		delta = regs->event_cycles[irq] - cycle;
+		if (delta > 0 && delta < minimum)
+			minimum = delta;
+	}
+	if (irq_test_cpu(cp0))
+		schedule_timeslice(regs);
+	else
+		regs->next_interupt = cycle + minimum;
 
+done:
 	evprintf("  -ge %08x, %u->%u (%d)\n", regs->pc, regs->cycle,
 		regs->next_interupt, regs->next_interupt - regs->cycle);
 }

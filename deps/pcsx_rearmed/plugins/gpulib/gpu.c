@@ -27,6 +27,12 @@
 #define log_io(...)
 
 struct psx_gpu gpu;
+#if BLOOM_DMA_PROFILE
+/* Diagnostic-only cumulative counts: chains, nodes, empty nodes, payload
+ * words, pending buffers, walking chains, upload calls, upload words,
+ * VRAM write/read starts, VRAM copies and copied pixels. */
+volatile uint32_t bloom_dma_counters[12];
+#endif
 
 static noinline int do_cmd_buffer(struct psx_gpu *gpu, uint32_t *data, int count,
     int *cycles_sum, int *cycles_last);
@@ -159,6 +165,12 @@ static noinline void update_height(struct psx_gpu *gpu)
   //  gpu->screen.y1, gpu->screen.y2, y, sh, vres);
 }
 
+/* Counts scheduling decisions, not presentations or pixels actually omitted. */
+uint32_t gpu_light_frameskip_stats[2]; /* skipped, total */
+#ifndef BLOOM_LIGHT_FRAME_PERIOD
+#define BLOOM_LIGHT_FRAME_PERIOD 4
+#endif
+
 static noinline void decide_frameskip(struct psx_gpu *gpu)
 {
   *gpu->frameskip.dirty = 1;
@@ -170,7 +182,17 @@ static noinline void decide_frameskip(struct psx_gpu *gpu)
     gpu->frameskip.frame_ready = 1;
   }
 
-  if (*gpu->frameskip.force)
+  if (gpu->frameskip.set == -2) {
+    /* Base the cadence on GPU flips, not vblanks: games can render at half
+     * the guest refresh rate. Never allow force/advice to turn this bounded
+     * mode into consecutive skips. The existing display-area checks remain. */
+    if (++gpu->frameskip.light_phase >= BLOOM_LIGHT_FRAME_PERIOD)
+      gpu->frameskip.light_phase = 0;
+    gpu->frameskip.active = gpu->frameskip.light_phase == 0;
+    gpu_light_frameskip_stats[0] += gpu->frameskip.active;
+    gpu_light_frameskip_stats[1]++;
+  }
+  else if (*gpu->frameskip.force)
     gpu->frameskip.active = 1;
   else if (!gpu->frameskip.active && *gpu->frameskip.advice)
     gpu->frameskip.active = 1;
@@ -503,6 +525,9 @@ static noinline void start_vram_transfer(struct psx_gpu *gpu, uint32_t pos_word,
   gpu->dma.offset = 0;
   gpu->dma.is_read = is_read;
   gpu->dma_start = gpu->dma;
+#if BLOOM_DMA_PROFILE
+  bloom_dma_counters[is_read ? 9 : 8]++;
+#endif
 
   renderer_flush_queues();
   if (is_read) {
@@ -559,6 +584,10 @@ static void do_vram_copy(struct psx_gpu *gpu, const uint32_t *params, int *cpu_c
   uint32_t x, y;
 
   *cpu_cycles += gput_copy(w, h);
+#if BLOOM_DMA_PROFILE
+  bloom_dma_counters[10]++;
+  bloom_dma_counters[11] += w * h;
+#endif
   if (sx == dx && sy == dy && msb == 0)
     return;
 
@@ -624,7 +653,7 @@ static noinline int do_cmd_list_skip(struct psx_gpu *gpu, uint32_t *data,
       case 0x34 ... 0x37:
       case 0x3c ... 0x3f:
         gpu->ex_regs[1] &= ~0x1ff;
-        gpu->ex_regs[1] |= LE32TOH(list[4 + ((cmd >> 4) & 1)]) & 0x1ff;
+        gpu->ex_regs[1] |= (LE32TOH(list[4 + ((cmd >> 4) & 1)]) >> 16) & 0x1ff;
         break;
       case 0x48 ... 0x4F:
         for (v = 3; pos + v < count; v++)
@@ -766,6 +795,10 @@ static noinline void flush_cmd_buffer(struct psx_gpu *gpu)
 void GPUwriteDataMem(uint32_t *mem, int count)
 {
   int dummy = 0, left;
+#if BLOOM_DMA_PROFILE
+  bloom_dma_counters[6]++;
+  bloom_dma_counters[7] += count;
+#endif
 
   log_io(&gpu, "gpu_dma_write %p %d\n", mem, count);
 
@@ -792,6 +825,10 @@ long GPUdmaChain(uint32_t *rambase, uint32_t start_addr,
   int len, left, count, ld_count = 32;
   int cpu_cycles_sum = 0;
   int cpu_cycles_last = 0;
+#if BLOOM_DMA_PROFILE
+  bloom_dma_counters[0]++;
+  bloom_dma_counters[5] += progress_addr != NULL;
+#endif
 
   preload(rambase + (start_addr & 0x1fffff) / 4);
 
@@ -805,6 +842,35 @@ long GPUdmaChain(uint32_t *rambase, uint32_t start_addr,
     list = rambase + (addr & 0x1fffff) / 4;
     len = LE32TOH(list[0]) >> 24;
     addr = LE32TOH(list[0]) & 0xffffff;
+    /* Empty ordering-table links do not touch renderer state. Keep their
+     * timing and loop detector, but avoid the command-buffer/walking path
+     * for each link. Partial packets and progressive DMA use the full path. */
+    if (!len && !gpu.cmd_len && !progress_addr) {
+      do {
+#if BLOOM_DMA_PROFILE
+        bloom_dma_counters[1]++;
+        bloom_dma_counters[2]++;
+#endif
+        cpu_cycles_sum += 10;
+        if (addr == ld_addr)
+          goto chain_done;
+        if (count == ld_count) {
+          ld_addr = addr;
+          ld_count *= 2;
+        }
+        count++;
+        if (addr & 0x800000)
+          goto chain_done;
+        list = rambase + (addr & 0x1fffff) / 4;
+        len = LE32TOH(list[0]) >> 24;
+        addr = LE32TOH(list[0]) & 0xffffff;
+      } while (!len);
+    }
+#if BLOOM_DMA_PROFILE
+    bloom_dma_counters[1]++;
+    bloom_dma_counters[2] += len == 0;
+    bloom_dma_counters[3] += len;
+#endif
     preload(rambase + (addr & 0x1fffff) / 4);
 
     cpu_cycles_sum += 10;
@@ -814,6 +880,9 @@ long GPUdmaChain(uint32_t *rambase, uint32_t start_addr,
     log_io(&gpu, ".chain %08lx #%d+%d %u+%u\n",
       (long)(list - rambase) * 4, len, gpu.cmd_len, cpu_cycles_sum, cpu_cycles_last);
     if (unlikely(gpu.cmd_len > 0)) {
+#if BLOOM_DMA_PROFILE
+      bloom_dma_counters[4]++;
+#endif
       if (gpu.cmd_len + len > ARRAY_SIZE(gpu.cmd_buffer)) {
         log_anomaly(&gpu, "cmd_buffer overflow, likely garbage commands\n");
         gpu.cmd_len = 0;
@@ -850,6 +919,7 @@ long GPUdmaChain(uint32_t *rambase, uint32_t start_addr,
     }
   }
 
+chain_done:
   //printf(" -> %d %d\n", cpu_cycles_sum, cpu_cycles_last);
   gpu.state.last_list.frame = *gpu.state.frame_count;
   gpu.state.last_list.hcnt = *gpu.state.hcnt;
@@ -1017,6 +1087,8 @@ void GPUrearmedCallbacks(const struct rearmed_cbs *cbs)
   gpu.frameskip.dirty = (void *)&cbs->fskip_dirty;
   gpu.frameskip.active = 0;
   gpu.frameskip.frame_ready = 1;
+  gpu.frameskip.light_phase = 0;
+  gpu_light_frameskip_stats[0] = gpu_light_frameskip_stats[1] = 0;
   gpu.state.hcnt = (uint32_t *)cbs->gpu_hcnt;
   gpu.state.frame_count = (uint32_t *)cbs->gpu_frame_count;
   gpu.state.allow_interlace = cbs->gpu_neon.allow_interlace;

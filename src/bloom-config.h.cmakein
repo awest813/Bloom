@@ -27,6 +27,7 @@
 #cmakedefine01 WITH_GDB
 #cmakedefine01 WITH_PERF_LOG
 #cmakedefine01 WITH_CORE_PROFILE
+#cmakedefine01 WITH_LIGHT_FRAMESKIP
 #cmakedefine01 WITH_CACHED_STDIO
 
 #cmakedefine01 WITH_FSAA

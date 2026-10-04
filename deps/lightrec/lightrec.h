@@ -122,6 +122,13 @@ struct lightrec_ops {
 	void (*enable_ram)(struct lightrec_state *state, _Bool enable);
 	_Bool (*hw_direct)(u32 kaddr, _Bool is_write, u8 size);
 	void (*code_inv)(void *addr, u32 len);
+	/* Optional platform-verified polling loop. The predicate is used at
+	 * compilation; the fold callback must recheck code and runtime state.
+	 * Return consumed cycles strictly below budget; retain the read PC.
+	 * Only GPRs 2/3 may change; 4/5/7/8/9 are synchronized inputs. */
+	_Bool (*is_poll_loop)(struct lightrec_state *, u32 pc);
+	u32 (*fold_poll_loop)(struct lightrec_state *, u32 pc, u32 budget,
+			      u32 cycles_per_opcode);
 };
 
 struct lightrec_registers {

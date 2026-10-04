@@ -413,6 +413,24 @@ const PT gpuTileDrivers[32] = {
 typedef void (*PS)(le16_t *pPixel, u32 count, const u8 *pTxt,
 	const gpu_unai_inner_t &inn);
 
+#ifdef __sh__
+// Unrolling helps direct-color sprites on SH-4, but regresses palette sprites.
+// Keep reads and writes in pixel order: textures may overlap the destination.
+template<bool MaskSet>
+static inline void gpuSpriteSpan16Raw(le16_t *pDst, u32 count,
+	const u8 *pTxt, u32 u, u32 mask)
+{
+#pragma GCC unroll 2
+	do {
+		u16 src = le16_to_u16(*(const le16_t *)&pTxt[u & mask]);
+		if (src)
+			*pDst = u16_to_le16(src | (MaskSet ? 0x8000 : 0));
+		u += 2;
+		++pDst;
+	} while (--count);
+}
+#endif
+
 template<int CF>
 static noinline void gpuSpriteDriverFn(le16_t *pPixel, u32 count, const u8 *pTxt_base,
 	const gpu_unai_inner_t &inn)
@@ -451,6 +469,13 @@ static noinline void gpuSpriteDriverFn(le16_t *pPixel, u32 count, const u8 *pTxt
 	  le16_t *pDst = pPixel;
 	  u32 u0 = u0_;
 	  u32 count1 = count;
+	  // SH-4 raw 16-bit path; all lighting, blending and mask checks stay below.
+#ifdef __sh__
+	  if (CF_TEXTMODE == 3 && !CF_LIGHT && !CF_BLEND && !CF_MASKCHECK) {
+		gpuSpriteSpan16Raw<CF_MASKSET>(pDst, count1, pTxt, u0, u0_mask);
+		continue;
+	  }
+#endif
 	  do
 	  {
 		if (CF_MASKCHECK || CF_BLEND) { uDst = le16_to_u16(*pDst); }
@@ -610,6 +635,10 @@ const PS gpuSpriteDrivers[256] = {
 template<int CF>
 static noinline void gpuPolySpanFn(const gpu_unai_t &gpu_unai, le16_t *pDst, u32 count)
 {
+#ifdef BLOOM_UNAI_PROFILE
+	bloom_unai_span_calls[CF & 1023]++;
+	bloom_unai_span_pixels[CF & 1023] += count;
+#endif
 	// Blend func can save an operation if it knows uSrc MSB is unset.
 	//  Untextured prims can always skip this (src color MSB is always 0).
 	//  For textured prims, the generic lighting funcs always return it unset. (bonus!)

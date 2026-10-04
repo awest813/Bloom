@@ -29,6 +29,7 @@ struct reaper {
 
 	bool running;
 	atomic_uint sem;
+	atomic_uint pending;
 };
 
 struct reaper *lightrec_reaper_init(struct lightrec_state *state)
@@ -44,7 +45,8 @@ struct reaper *lightrec_reaper_init(struct lightrec_state *state)
 
 	reaper->state = state;
 	reaper->running = false;
-	reaper->sem = 0;
+	atomic_init(&reaper->sem, 0);
+	atomic_init(&reaper->pending, 0);
 	slist_init(&reaper->reap_list);
 
 	ret = pthread_mutex_init(&reaper->mutex, NULL);
@@ -103,6 +105,7 @@ int lightrec_reaper_add(struct reaper *reaper, reap_func_t f, void *data)
 	reaper_elm->func = f;
 	reaper_elm->data = data;
 	slist_append(&reaper->reap_list, &reaper_elm->slist);
+	atomic_store_explicit(&reaper->pending, 1, memory_order_release);
 
 out_unlock:
 	pthread_mutex_unlock(&reaper->mutex);
@@ -119,11 +122,21 @@ void lightrec_reaper_reap(struct reaper *reaper)
 	struct reaper_elm *reaper_elm;
 	struct slist_elm *elm;
 
+	/* Execution calls us at every guest event, usually with no cleanup to
+	 * do. Only inspect this atomic hint without the mutex; the list and
+	 * running flag remain protected. Concurrent additions may be handled
+	 * by the next call, just as when they arrive after the old unlock. */
+	if (!atomic_load_explicit(&reaper->pending, memory_order_acquire))
+		return;
+
 	pthread_mutex_lock(&reaper->mutex);
 
 	while (lightrec_reaper_can_reap(reaper) &&
 	       !!(elm = slist_first(&reaper->reap_list))) {
 		slist_remove(&reaper->reap_list, elm);
+		atomic_store_explicit(&reaper->pending,
+				      !slist_empty(&reaper->reap_list),
+				      memory_order_release);
 		reaper->running = true;
 		pthread_mutex_unlock(&reaper->mutex);
 

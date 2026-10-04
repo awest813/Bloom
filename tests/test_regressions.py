@@ -138,6 +138,48 @@ def host_cc():
 
 
 class RegressionTests(unittest.TestCase):
+    def test_timer2_read_preserves_all_rates_and_cycle_wraparound(self):
+        from benchmark_timer2 import source
+        self.compile_and_run(source())
+
+    def test_event_scan_preserves_callbacks_wraparound_and_exceptions(self):
+        source = (ROOT / "tests/psxevents.c").read_text().replace(
+            "/* Production functions inserted here. */",
+            functions("deps/pcsx_rearmed/libpcsxcore/psxevents.c",
+                      ["schedule_timeslice", "irq_test_cpu", "irq_test", "gen_interupt"]))
+        self.compile_and_run(source)
+
+    def test_light_frameskip_is_bounded_and_preserves_other_modes(self):
+        source = (ROOT / "tests/light_frameskip.c").read_text().replace(
+            "/* Insert production decision function here. */",
+            functions("deps/pcsx_rearmed/plugins/gpulib/gpu.c", ["decide_frameskip"]))
+        for period in (4, 8, 16, 60):
+            with self.subTest(period=period):
+                self.compile_and_run(source, extra_flags=[f"-DBLOOM_LIGHT_FRAME_PERIOD={period}"])
+
+    def test_gpu_status_poll_preserves_values_cycles_and_first_sync(self):
+        production = functions("deps/pcsx_rearmed/libpcsxcore/lightrec/plugin.c", ["hw_read_word"])
+        reference = production.replace("hw_read_word(", "hw_read_word_ref(").replace(
+            "val = gpuStatusAtCycle(status, psxRegs.cycle, idle_after, hsync);",
+            "val = psxHwRead32(mem);")
+        reference = re.sub(r"\s*u32 (?:status|idle_after|hsync) = [^;]+;", "", reference)
+        skip = ("\t\t\tif (val == old_gpusr)\n"
+                "\t\t\t\tpsxRegs.cycle = gpuConstantPollEnd(status, psxRegs.cycle,\n"
+                "\t\t\t\t\tpsxRegs.next_interupt, diff, hsync);\n")
+        self.assertIn(skip, reference)
+        reference = reference.replace(skip, "")
+        source = (ROOT / "tests/gpu_status_poll.c").read_text().replace(
+            "/* Production polling and reference functions are inserted here. */",
+            production + reference)
+        self.compile_and_run(source)
+
+    def test_reaper_empty_dispatch_and_concurrent_publication(self):
+        reaper = (ROOT / "deps/lightrec/reaper.c").read_text()
+        reaper = re.sub(r'^#include "[^"\n]+"\n', '', reaper, flags=re.M)
+        source = (ROOT / "tests/reaper.c").read_text().replace(
+            "/* Production reaper is inserted here by test_regressions.py. */", reaper)
+        self.compile_and_run(source, extra_flags=["-pthread"])
+
     def test_core_profile_wrappers_preserve_calls_and_nested_attribution(self):
         profiler = (ROOT / "src/core_profile.c").read_text().replace(
             "#include <arch/timer.h>", "")
@@ -145,6 +187,61 @@ class RegressionTests(unittest.TestCase):
             "/* Production profiler is inserted here by test_regressions.py. */",
             profiler)
         self.compile_and_run(source)
+
+    def test_countdown_poll_preserves_guest_memory_registers_and_cycles(self):
+        self.compile_and_run((ROOT / "tests/countdown_poll.c").read_text())
+
+    def test_timer_poll_preserves_cycles_registers_and_mode(self):
+        self.compile_and_run((ROOT / "tests/timer_poll.c").read_text())
+
+    def test_gpu_dma_empty_links_preserve_commands_timing_and_progress(self):
+        source = (ROOT / "tests/gpu_dma_chain.c").read_text().replace(
+            "/* Production DMA is inserted here by test_regressions.py. */",
+            functions("deps/pcsx_rearmed/plugins/gpulib/gpu.c", ["GPUdmaChain"]))
+        self.compile_and_run(source)
+
+    def test_sh4_gte_divider_normalization_all_denominators(self):
+        source = '''#include <stdint.h>
+#include <assert.h>
+typedef uint8_t u8; typedef uint16_t u16;
+''' + functions("deps/pcsx_rearmed/libpcsxcore/gte_divider.c", ["gte_clz16"])
+        source += '''
+int main(void) {
+    for (unsigned d = 1; d < 65536; d++)
+        assert(gte_clz16(d) == __builtin_clz(d) - 16);
+}
+'''
+        self.compile_and_run(source)
+
+    def test_direct_hw_read_preserves_handlers_load_delays_and_map_priority(self):
+        code = (ROOT / "deps/lightrec/lightrec.c").read_text()
+        private = (ROOT / "deps/lightrec/lightrec-private.h").read_text()
+        decoder = (ROOT / "deps/lightrec/disassembler.h").read_text()
+        layout = decoder[decoder.index("struct opcode_i {"):decoder.index("struct opcode_j {")]
+        support = '''
+#define __packed __attribute__((packed))
+#define unlikely(x) (x)
+#define OPT_HANDLE_LOAD_DELAYS 1
+enum { OP_LB=32, OP_LBU=36, OP_LH=33, OP_LHU=37, OP_LW=35 };
+struct lightrec_state {
+    struct lightrec_registers regs;
+    u32 temp_reg;
+    unsigned char in_delay_slot_n;
+    bool direct_hw_read;
+    unsigned nb_maps;
+    const struct lightrec_mem_map *maps;
+};
+''' + layout + 'union code { u32 opcode; struct opcode_i i; };\n'
+        support += extract_function(private, 'kunseg')
+        support += extract_function(code, 'lightrec_hw_read_map_ok')
+        support += extract_function(code, 'lightrec_read_hw_fast')
+        source = (ROOT / "tests/direct_hw_read.c").read_text().replace(
+            "/* Production opcode layout and functions are inserted here. */", support)
+        self.compile_and_run(source, extra_flags=["-O2"])
+
+    def test_gte_mac_experiment_portable_reference(self):
+        from benchmark_gte_mac import source
+        self.compile_and_run(source(), extra_flags=["-fwrapv", "-fno-sanitize=shift"])
 
     def test_core_profile_excludes_nested_work_and_serial_output(self):
         accounting = (ROOT / "src/core_profile.c").read_text().split("/* GNU ld")[0]
@@ -188,12 +285,61 @@ int main(void) {
 }
 ''')
 
+    def test_skipped_polygons_preserve_texture_page_for_later_sprites(self):
+        source = (ROOT / "tests/gpu_skip_state.c").read_text().replace(
+            "/* Insert production skip parser here. */",
+            functions("deps/pcsx_rearmed/plugins/gpulib/gpu.c", ["do_cmd_list_skip"]))
+        self.compile_and_run(source)
+
+    def test_pvr_frameskip_preserves_scene_origin_and_submitted_geometry(self):
+        source = (ROOT / "tests/pvr_skip_scene.c").read_text().replace(
+            "/* Insert production lace notification here. */",
+            functions("src/pvr.c", ["renderer_notify_update_lace"]))
+        self.compile_and_run(source)
+
     def test_pvr_software_visible_pixels_readback_and_texture_reuse(self):
         source = (ROOT / "tests/pvr_software.c").read_text().replace(
             "/* Production functions are inserted here by test_regressions.py. */",
-            functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_texel",
+            functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_hardware_only", "sw_texel",
                                      "sw_plot", "sw_shade", "sw_edge", "sw_edge_bias", "sw_triangle_flat",
                                      "sw_triangle", "sw_draw", "renderer_sync"]))
+        self.compile_and_run(source)
+
+    def test_pvr_mirror_offset_preserves_triangle_orientation_and_texture_depth(self):
+        source = (ROOT / "tests/pvr_mirror.c").read_text().replace(
+            "/* Production mirror offset is inserted here by test_regressions.py. */",
+            functions("src/pvr.c", ["uv_mirror_offset"]))
+        self.compile_and_run(source)
+
+    def test_pvr_visible_drawing_area_never_needs_software(self):
+        source = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#define WITH_PVR_SOFTWARE 0
+#define PSX_GPU_STATUS_BLANKING (1u << 23)
+static struct { unsigned status; struct { unsigned hres,vres; } screen; } gpu;
+static struct { unsigned start_x,start_y; } pvr;
+static struct { int x1,y1,x2,y2; } sw;
+static unsigned rng=1234567;
+static unsigned random32(void) {rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;return rng;}
+""" + functions("src/pvr.c", ["overlap_draw_area", "sw_bbox_offscreen", "sw_hardware_only"]) + r"""
+int main(void) {
+ unsigned hits=0;
+ for(unsigned i=0;i<1000000;i++) {
+  pvr.start_x=random32()%800;pvr.start_y=random32()%400;
+  gpu.screen.hres=1+random32()%640;gpu.screen.vres=1+random32()%480;
+  sw.x1=random32()%1024;sw.x2=sw.x1+1+random32()%(1024-sw.x1);
+  sw.y1=random32()%512;sw.y2=sw.y1+1+random32()%(512-sw.y1);
+  gpu.status=i%8==0?PSX_GPU_STATUS_BLANKING:0;
+  int x0=(int)(random32()%4096)-2048,x1=x0+random32()%2048;
+  int y0=(int)(random32()%4096)-2048,y1=y0+random32()%2048;
+  if(sw_hardware_only()) {hits++;assert(!sw_bbox_offscreen(&x0,&y0,&x1,&y1));}
+  if(gpu.status) assert(!sw_hardware_only());
+ }
+ assert(hits>1000);
+}
+"""
         self.compile_and_run(source)
 
     def test_pvr_draw_state_windows_coordinates_and_clipping(self):
@@ -281,6 +427,12 @@ int main(void) {
             "/* Production functions are inserted here by test_regressions.py. */",
             production))
 
+    def test_pvr_block_mask_fast_path_preserves_all_edges_and_degenerate_ranges(self):
+        source = (ROOT / "tests/pvr_block_mask.c").read_text().replace(
+            "/* Production block mask is inserted here by test_regressions.py. */",
+            functions("src/pvr.c", ["get_block_mask"]))
+        self.compile_and_run(source)
+
     def test_pvr_texture_update_edges(self):
         self.compile_and_run(r'''
 #include <assert.h>
@@ -343,7 +495,7 @@ int main(void) {
 
     def test_pvr_blanked_display_writes_vram_without_hardware_queues(self):
         source = (ROOT / "tests/pvr_blanking.c").read_text()
-        production = functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_draw",
+        production = functions("src/pvr.c", ["psx_coord", "sw_bbox_offscreen", "sw_hardware_only", "sw_draw",
                                               "sw_line_advance", "sw_line", "sw_draw_lines", "process_poly"])
         self.compile_and_run(source.replace(
             "/* Production functions are inserted here by test_regressions.py. */",
@@ -387,12 +539,35 @@ int decoy(int x) {
         with self.assertRaises(AssertionError):
             extract_function("int missing(void);\n", "missing")
 
-    def compile_and_run(self, source, extra_sources=None):
+    def test_unai_raw16_sprite_preserves_vram_and_feedback(self):
+        from benchmark_unai_sprite import source
+        # Sanitizers may ignore the unrolling annotation. Check the exact pixel
+        # operations here; the native benchmark verifies SH-4 emitted code.
+        program = source(production=True).replace("#pragma GCC unroll 2", "")
+        self.compile_and_run("#define SPRITE_CHECK_ONLY 1\n" + program,
+                             extra_flags=["-O2"], cxx=True)
+
+    def test_spu_nointerp_cursor_preserves_samples_and_callbacks(self):
+        from benchmark_spu_cursor import source
+        self.compile_and_run("#define CHECK_ONLY 1\n" + source(), extra_flags=["-O2"])
+
+    def test_gte_bounds_preserve_complete_registers_and_flags(self):
+        from benchmark_gte_bounds import source
+        # Existing GTE arithmetic uses wrapping signed operations and shifts
+        # of negative values. Keep address/other UB checks enabled.
+        self.compile_and_run("#define CHECK_ONLY 1\n" + source(production=True),
+                             extra_flags=["-O2", "-fwrapv", "-fno-sanitize=shift"])
+
+    def test_pvr_trace_distinguishes_vertex_continuations(self):
+        self.compile_and_run((ROOT / "tests/pvr_trace.c").read_text())
+
+    def compile_and_run(self, source, extra_sources=None, extra_flags=None, cxx=False):
         with tempfile.TemporaryDirectory() as directory:
-            source_path = Path(directory) / "check.c"
+            source_path = Path(directory) / ("check.cpp" if cxx else "check.c")
             binary = Path(directory) / "check"
             source_path.write_text(source)
-            command = [host_cc(), "-std=gnu11",
+            compiler = os.environ.get("CXX", "g++") if cxx else host_cc()
+            command = [compiler, "-std=gnu++11" if cxx else "-std=gnu11",
                        "-g", "-Wall", "-Wextra", "-Werror",
                        "-Wno-unused-function", "-Wno-unused-parameter",
                        "-fno-omit-frame-pointer",
@@ -405,6 +580,7 @@ int decoy(int x) {
                        str(source_path)]
             for extra in extra_sources or []:
                 command.append(str(extra))
+            command.extend(extra_flags or [])
             command.extend(["-o", str(binary)])
             compiled = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0,

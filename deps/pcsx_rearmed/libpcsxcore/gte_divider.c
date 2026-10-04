@@ -33,10 +33,42 @@ static const u8 table[] =
 	0x00
 };
 
+#ifdef __sh__
+/* SH-4 has no CLZ instruction. The divider only normalizes nonzero 16-bit
+ * values, so one byte lookup avoids a call to the generic 32-bit helper. */
+static inline int gte_clz16(u16 denominator)
+{
+	static const u8 leading_zeroes[256] = {
+		8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
+		3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+		2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+		2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	};
+	unsigned upper = denominator >> 8;
+	return upper ? leading_zeroes[upper] : leading_zeroes[denominator] + 8;
+}
+#endif
+
 u32 DIVIDE(u16 numerator, u16 denominator)
 {
 	if (numerator < (denominator * 2)) {
+	#ifdef __sh__
+		int shift = gte_clz16(denominator);
+	#else
 		int shift = __builtin_clz(denominator) - 16;
+	#endif
 
 		int r1 = (denominator << shift) & 0x7fff;
 		int r2 = table[(r1 + 0x40) >> 7] + 0x101;

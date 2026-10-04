@@ -99,7 +99,7 @@ struct psx_gpu {
     int screen_centering_h_adj;
   } state;
   struct {
-    int32_t set:3; /* -1 auto, 0 off, 1-3 fixed */
+    int32_t set:3; /* -2 light (one in four), -1 auto, 0 off, 1-3 fixed */
     int32_t cnt:3; /* amount skipped in a row */
     uint32_t active:1;
     uint32_t allow:1;
@@ -108,6 +108,7 @@ struct psx_gpu {
     const int *force;
     int *dirty;
     uint32_t last_flip_frame;
+    uint32_t light_phase;
     uint32_t pending_fill[3];
   } frameskip;
   uint32_t scratch_ex_regs[8]; // for threaded rendering

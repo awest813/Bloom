@@ -29,6 +29,15 @@
 #include <stddef.h>
 #include <string.h>
 
+#if OPT_COUNTDOWN_POLL
+#include "countdown-poll.h"
+#endif
+
+#if OPT_BOUNDED_IO_POLL && BLOOM_POLL_PROFILE
+/* Diagnostic-only counters and last matching entry, read between callbacks. */
+volatile u32 bloom_poll_diagnostic[24];
+#endif
+
 static struct block * lightrec_precompile_block(struct lightrec_state *state,
 						u32 pc);
 static bool lightrec_block_is_fully_tagged(const struct block *block);
@@ -399,9 +408,96 @@ static void lightrec_rw_helper(struct lightrec_state *state,
 	}
 }
 
+#if OPT_DIRECT_HW_READ
+/* Only specialize an unambiguous, non-mirrored hardware map. Preserve the
+ * ordered map lookup for every custom layout, overlapping map and fallback. */
+static bool lightrec_hw_read_map_ok(const struct lightrec_state *state)
+{
+	const struct lightrec_mem_map *map;
+	unsigned int i;
+	if (state->nb_maps <= PSX_MAP_HW_REGISTERS)
+		return false;
+	map = &state->maps[PSX_MAP_HW_REGISTERS];
+	/* PCSX maps a larger hardware aperture (0x8000). Only the first
+	 * 0x2000 bytes are specialized; the rest retain ordered lookup. */
+	if (map->pc != 0x1f801000 || map->length < 0x2000 ||
+	    map->mirror_of || !map->address || !map->ops ||
+	    !map->ops->lb || !map->ops->lh || !map->ops->lw)
+		return false;
+	for (i = 0; i < PSX_MAP_HW_REGISTERS; i++) {
+		const struct lightrec_mem_map *prior = &state->maps[i];
+		if (prior->length && prior->pc < 0x1f803000 &&
+		    (u64)prior->pc + prior->length > 0x1f801000)
+			return false;
+	}
+	return true;
+}
+
+static bool lightrec_read_hw_fast(struct lightrec_state *state, union code op)
+{
+	const struct lightrec_mem_map *map;
+	u32 addr, result;
+	void *host;
+	if (!state->direct_hw_read)
+		return false;
+	addr = kunseg(state->regs.gpr[op.i.rs] + (s16)op.i.imm);
+	if (addr < 0x1f801000 || addr >= 0x1f803000)
+		return false;
+	map = &state->maps[PSX_MAP_HW_REGISTERS];
+	host = (char *)map->address + (addr - map->pc);
+	switch (op.i.op) {
+	case OP_LB: result = (s32)(s8)map->ops->lb(state, op.opcode, host, addr); break;
+	case OP_LBU: result = map->ops->lb(state, op.opcode, host, addr); break;
+	case OP_LH: result = (s32)(s16)map->ops->lh(state, op.opcode, host, addr); break;
+	case OP_LHU: result = map->ops->lh(state, op.opcode, host, addr); break;
+	case OP_LW: result = map->ops->lw(state, op.opcode, host, addr); break;
+	default: return false;
+	}
+	/* Match the generic helper, including reads into zero and delayed loads. */
+	if (OPT_HANDLE_LOAD_DELAYS && unlikely(!state->in_delay_slot_n)) {
+		state->temp_reg = result;
+		state->in_delay_slot_n = 0xff;
+	} else if (op.i.rt) {
+		state->regs.gpr[op.i.rt] = result;
+	}
+	return true;
+}
+#endif
+
 static void lightrec_rw_cb(struct lightrec_state *state, u32 arg)
 {
+#if OPT_DIRECT_HW_READ
+	if (lightrec_read_hw_fast(state, (union code)arg))
+		return;
+#endif
 	lightrec_rw_helper(state, (union code) arg, NULL, NULL, 0);
+}
+
+static void lightrec_poll_cb(struct lightrec_state *state, u32 pc)
+{
+#if OPT_BOUNDED_IO_POLL
+#if BLOOM_POLL_PROFILE
+	bloom_poll_diagnostic[1]++;
+	bloom_poll_diagnostic[8] = pc;
+	bloom_poll_diagnostic[21] = state->in_delay_slot_n;
+	bloom_poll_diagnostic[22] = state->current_cycle;
+	bloom_poll_diagnostic[23] = state->exit_flags;
+#endif
+	if (state->ops.fold_poll_loop &&
+	    state->target_cycle > state->current_cycle &&
+	    state->exit_flags == LIGHTREC_EXIT_NORMAL &&
+	    state->in_delay_slot_n == 0xff &&
+	    !(state->regs.cp0[12] & BIT(16)) &&
+	    !state->maps[PSX_MAP_KERNEL_USER_RAM].ops &&
+	    !state->maps[PSX_MAP_KERNEL_USER_RAM].pc &&
+	    !state->maps[PSX_MAP_KERNEL_USER_RAM].mirror_of) {
+#if BLOOM_POLL_PROFILE
+		bloom_poll_diagnostic[3]++;
+#endif
+		state->current_cycle += state->ops.fold_poll_loop(state, pc,
+			state->target_cycle - state->current_cycle, state->cycles_per_op);
+	}
+#endif
 }
 
 static void lightrec_rw_generic_cb(struct lightrec_state *state, u32 arg)
@@ -1778,6 +1874,28 @@ u32 lightrec_execute(struct lightrec_state *state, u32 pc, u32 target_cycle)
 	state->target_cycle = target_cycle;
 	state->curr_pc = pc;
 
+#if OPT_BOUNDED_IO_POLL && BLOOM_POLL_PROFILE
+	bloom_poll_diagnostic[0]++;
+#endif
+#if OPT_COUNTDOWN_POLL
+	if (state->in_delay_slot_n && !(state->regs.cp0[12] & BIT(16)) &&
+	    !state->maps[PSX_MAP_KERNEL_USER_RAM].ops &&
+	    !state->maps[PSX_MAP_KERNEL_USER_RAM].pc &&
+	    !state->maps[PSX_MAP_KERNEL_USER_RAM].mirror_of &&
+	    state->target_cycle > state->current_cycle) {
+		u32 written, consumed = lightrec_countdown_poll(
+			(uintptr_t)state->maps[PSX_MAP_KERNEL_USER_RAM].address,
+			state->maps[PSX_MAP_KERNEL_USER_RAM].length, kunseg(pc),
+			state->regs.gpr, state->target_cycle - state->current_cycle,
+			state->cycles_per_op, &written);
+		if (consumed) {
+			state->current_cycle += consumed;
+			if (!(state->opt_flags & LIGHTREC_OPT_INV_DMA_ONLY))
+				lightrec_invalidate(state, written, 4);
+		}
+	}
+#endif
+
 	block_trace = get_next_block_func(state, pc);
 	if (block_trace) {
 		cycles_delta = state->target_cycle - state->current_cycle;
@@ -1942,6 +2060,9 @@ struct lightrec_state * lightrec_init(char *argv0,
 
 	state->nb_maps = nb;
 	state->maps = maps;
+#if OPT_DIRECT_HW_READ
+	state->direct_hw_read = lightrec_hw_read_map_ok(state);
+#endif
 
 	memcpy(&state->ops, ops, sizeof(*ops));
 
@@ -1950,6 +2071,7 @@ struct lightrec_state * lightrec_init(char *argv0,
 		goto err_free_reaper;
 
 	state->c_wrappers[C_WRAPPER_RW] = lightrec_rw_cb;
+	state->c_wrappers[C_WRAPPER_POLL] = lightrec_poll_cb;
 	state->c_wrappers[C_WRAPPER_RW_GENERIC] = lightrec_rw_generic_cb;
 	state->c_wrappers[C_WRAPPER_MFC] = lightrec_mfc_cb;
 	state->c_wrappers[C_WRAPPER_MTC] = lightrec_mtc_cb;

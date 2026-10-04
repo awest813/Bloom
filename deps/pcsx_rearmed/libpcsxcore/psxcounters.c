@@ -524,7 +524,13 @@ u32 psxRcntRcount2()
     u32 index = 2;
     u32 count;
 
-    count = _psxRcntRcount( index );
+    /* Timer 2 commonly uses the CPU/8 clock. Avoid a variable divide on
+     * hosts without a hardware divider; retain the generic stopped-clock
+     * and unusual-rate behavior, including unsigned cycle wraparound. */
+    if (rcnts[index].rate == 8)
+        count = ((psxRegs.cycle - rcnts[index].cycleStart) >> 3) & 0xffff;
+    else
+        count = _psxRcntRcount( index );
 
     verboseLog( 2, "[RCNT 2] rcount: %04x m: %04x\n", count, rcnts[index].mode);
 

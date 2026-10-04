@@ -22,6 +22,8 @@
 #include <sys/time.h>
 
 #include "bloom-config.h"
+#include "core_profile.h"
+#include "frame_stats.h"
 #include "emu.h"
 #include "pvr.h"
 
@@ -38,6 +40,11 @@
 static unsigned int frames;
 static uint64_t timer_ms;
 static bool stats_started;
+#if WITH_PERF_LOG
+volatile struct bloom_frame_sample bloom_frame_sample;
+static uint32_t stats_guest_frames;
+extern uint32_t gpu_light_frameskip_stats[2];
+#endif
 
 static pvr_ptr_t pvram;
 static uint32_t *pvram_sq;
@@ -265,6 +272,10 @@ static void dc_vout_report_stats(void)
 	uint64_t new_timer, cputime, idletime;
 	pvr_stats_t pvr_stats;
 
+#if WITH_CORE_PROFILE
+	bloom_profile_present();
+#endif
+
 	new_timer = timer_ms_gettime64();
 
 	frames++;
@@ -275,10 +286,23 @@ static void dc_vout_report_stats(void)
 		last_cputime = new_timer;
 		last_idletime = thd_get_cpu_time(thd_get_idle());
 		frames = 0;
+		#if WITH_PERF_LOG
+		stats_guest_frames = frame_counter;
+		#endif
 		return;
 	}
 
 	if (new_timer - timer_ms >= 1000) {
+#if WITH_PERF_LOG
+		bloom_frame_sample.sequence++;
+		bloom_frame_sample.duration_ms = new_timer - timer_ms;
+		bloom_frame_sample.presentations = frames;
+		bloom_frame_sample.vblanks = (uint32_t)frame_counter - stats_guest_frames;
+		bloom_frame_sample.skip_decisions = gpu_light_frameskip_stats[0];
+		bloom_frame_sample.total_decisions = gpu_light_frameskip_stats[1];
+		bloom_frame_sample.sequence++;
+		stats_guest_frames = frame_counter;
+#endif
 		pvr_get_stats(&pvr_stats);
 
 		cputime = timer_ms_gettime64();
@@ -435,6 +459,7 @@ static void dc_vout_flip(const void *vram, int offset, int bgr24,
 }
 
 static struct rearmed_cbs dc_rearmed_cbs = {
+	.frameskip = WITH_LIGHT_FRAMESKIP ? -2 : 0,
 	.pl_vout_open		= dc_vout_open,
 	.pl_vout_close		= dc_vout_close,
 	.pl_vout_set_mode	= dc_vout_set_mode,

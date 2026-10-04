@@ -178,7 +178,12 @@
 #ifndef FLAGLESS
 
 static inline s64 BOUNDS_(psxCP2Regs *regs, s64 n_value, s64 n_max, int n_maxflag, s64 n_min, int n_minflag) {
-	if (n_value > n_max) {
+	/* All GTE accumulator bounds are signed 32-bit. Comparing against the
+	 * sign-extended low word avoids two 64-bit range comparisons on SH-4. */
+	if (n_max == INT32_MAX && n_min == INT32_MIN) {
+		if (n_value != (s32)n_value)
+			gteFLAG |= n_value < 0 ? n_minflag : n_maxflag;
+	} else if (n_value > n_max) {
 		gteFLAG |= n_maxflag;
 	} else if (n_value < n_min) {
 		gteFLAG |= n_minflag;
