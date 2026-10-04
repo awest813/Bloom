@@ -170,4 +170,3 @@ int main(void) {
  dma_done=1;puts("DMA benchmark complete");while(1)thd_sleep(100);
 #endif
 }
-

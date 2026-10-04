@@ -13,7 +13,7 @@ static unsigned char callback_delay;
 static void observe(struct lightrec_state *s, u32 opcode, void *host, u32 addr)
 {
     assert(opcode == expected_opcode && addr == expected_address);
-    assert(host == memory + addr - 0x1f801000);
+    assert(host == memory + (addr - 0x1f801000));
     reads++;
     s->regs.gpr[17] ^= addr;
     s->in_delay_slot_n = callback_delay;
